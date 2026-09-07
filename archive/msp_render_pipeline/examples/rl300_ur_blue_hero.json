@@ -1,0 +1,54 @@
+{
+  "job_id": "rl300_ur_blue_p1",
+  "package_model": "RL300_SAFE",
+  "cad_source": {
+    "file_path": "3D models/V2RL300-SAFE.glb",
+    "format": "glb",
+    "up_axis": "Z",
+    "unit_scale": 1.0
+  },
+  "camera": {
+    "preset": "P1_FRONT_ISO",
+    "focal_length_mm": 50.0,
+    "elevation_deg": 14.0,
+    "azimuth_deg": 45.0,
+    "target_offset": [0.0, 0.0, 0.45]
+  },
+  "livery": {
+    "preset": "united_rentals_blue",
+    "body_color_hex": "#00529B",
+    "body_roughness": 0.32,
+    "body_clearcoat": 0.30,
+    "frame_color_hex": "#141414",
+    "frame_roughness": 0.55,
+    "decal_pack": "UNITED_RENTALS"
+  },
+  "lighting": {
+    "preset": "studio_white",
+    "intensity_multiplier": 1.0,
+    "color_temperature_k": 5600,
+    "shadow_catcher": true
+  },
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "samples": 128,
+    "engine": "CYCLES",
+    "denoiser": "OPENIMAGEDENOISE",
+    "passes": {
+      "beauty": true,
+      "alpha_mask": true,
+      "depth_map": true,
+      "surface_normals": false,
+      "contact_shadow": true
+    },
+    "output_dir": "./output/rl300_ur_blue_p1"
+  },
+  "compositing": {
+    "enabled": false,
+    "background_plate": "",
+    "ai_environment_prompt": "",
+    "shadow_opacity": 0.85,
+    "edge_feather_px": 1
+  }
+}
