@@ -1,5 +1,5 @@
 {
-  "job_id": "rl300_render_ready_blend",
+  "job_id": "rl300_excavation pit",
   "package_model": "RL300_SAFE",
   "cad_source": {
     "file_path": "C:/Projects/CAD/RL300-SAFE/RL300-SAFE-render_ready.blend",
@@ -12,18 +12,18 @@
     "focal_length_mm": 50.0,
     "elevation_deg": 14.0,
     "azimuth_deg": 45.0,
-    "target_offset": [0.0, 0.0, 0.80],
-    "distance_multiplier": 3.85
+    "distance_multiplier": 3.85,
+    "target_offset": [0.05, -0.05, 0.80]
   },
   "geometry": {
-    "smooth_hardware": true,
+    "smooth_hardware": false,
     "hide_misplaced_isolators": true
   },
   "livery": {
     "preset": "preserve_existing"
   },
   "lighting": {
-    "preset": "preserve_existing",
+    "preset": "excavation_pit_sunlit",
     "intensity_multiplier": 1.0,
     "shadow_catcher": true
   },
@@ -38,11 +38,13 @@
       "alpha_mask": true,
       "depth_map": true,
       "surface_normals": false,
-      "contact_shadow": true
+      "contact_shadow": false
     },
-    "output_dir": "./output/rl300_render_ready"
+    "output_dir": "./output/rl300_excavation_pit"
   },
   "compositing": {
-    "enabled": false
+    "enabled": true,
+	"background_plate": "work-assets/Renderings/env_excavationPit-sunlit.png",
+    "shadow_opacity": 0.85
   }
 }

@@ -33,14 +33,14 @@ def validate_manifest(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     cam_preset = data["camera"].get("preset")
     if not cam_preset:
         return False, "Missing 'camera.preset'"
-    if cam_preset != "CUSTOM" and cam_preset not in CAMERA_PRESETS:
+    if cam_preset not in ["CUSTOM", "USE_SCENE_CAMERA", "PRESERVE_EXISTING"] and cam_preset not in CAMERA_PRESETS:
         return False, f"Unknown camera preset '{cam_preset}'. Valid: {list(CAMERA_PRESETS.keys())}"
 
     # Validate livery
     livery_preset = data["livery"].get("preset")
     if not livery_preset:
         return False, "Missing 'livery.preset'"
-    if livery_preset != "custom" and livery_preset not in LIVERY_PRESETS:
+    if livery_preset not in ["custom", "preserve_existing"] and livery_preset not in LIVERY_PRESETS:
         return False, f"Unknown livery preset '{livery_preset}'. Valid: {list(LIVERY_PRESETS.keys())}"
 
     # Validate output dimensions

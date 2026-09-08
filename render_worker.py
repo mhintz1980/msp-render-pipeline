@@ -198,16 +198,36 @@ def apply_livery_materials(livery_spec: Dict[str, Any]):
     f_links.new(f_bsdf.outputs["BSDF"], f_output.inputs["Surface"])
 
     # --- Bind materials ---
+ # In render_worker.py — replace lines 212-224 with:
     for obj in bpy.context.scene.objects:
-        if obj.type == 'MESH':
+        if obj.type == "MESH":
             name_lower = obj.name.lower()
-            if any(k in name_lower for k in ["frame", "skid", "base", "bumper", "fork", "trailer", "fender", "axle", "hitch", "tank", "chassis"]):
-                obj.data.materials.clear()
-                obj.data.materials.append(frame_mat)
-            elif any(k in name_lower for k in ["body", "panel", "door", "enclosure", "hood", "roof", "canopy", "louver", "sheet", "cover"]):
-                obj.data.materials.clear()
-                obj.data.materials.append(body_mat)
+            if any(k in name_lower for k in ["latch", "handle", "lock", "hinge", "catch", "recess"]):
+                try:
+                    obj.select_set(True)
+                    bpy.context.view_layer.objects.active = obj
 
+                    # 1. Strip any destructive Subsurf modifiers
+                    for mod in list(obj.modifiers):
+                        if mod.type == "SUBSURF" or mod.name == "Hardware_Subdiv":
+                            obj.modifiers.remove(mod)
+
+                    # 2. Apply non-destructive CAD angle smoothing
+                    if smooth_latches:
+                        try:
+                            # Blender 4.1+ / 5.x
+                            bpy.ops.object.shade_smooth_by_angle(angle=math.radians(30.0))
+                        except Exception:
+                            obj.data.use_auto_smooth = True
+                            obj.data.auto_smooth_angle = math.radians(30.0)
+                            bpy.ops.object.shade_smooth()
+
+                        # 3. Add Weighted Normal to keep planar faces flat and edges crisp
+                        if not any(m.type == "WEIGHTED_NORMAL" for m in obj.modifiers):
+                            wn = obj.modifiers.new(name="Hardware_WeightedNormal", type="WEIGHTED_NORMAL")
+                            wn.keep_sharp = True
+                except Exception:
+                    pass
 
 def setup_camera(camera_spec: Dict[str, Any], center: Any, radius: float):
     """Configures camera placement and target tracking."""
@@ -215,13 +235,16 @@ def setup_camera(camera_spec: Dict[str, Any], center: Any, radius: float):
     elevation = math.radians(camera_spec.get("elevation_deg", 14.0))
     focal_length = camera_spec.get("focal_length_mm", 50.0)
     
-    # Increase distance multiplier from 3.2 to 3.85 to capture the entire enclosure and ceiling
-    dist_mult = camera_spec.get("distance_multiplier", 3.85)
+    dist_mult = camera_spec.get("distance_multiplier", 3.2)
     distance = radius * dist_mult
     target = center.copy()
-    # Target mid-upper height (0.85 of center Z) so the roof and ceiling are fully in frame
-    target_offset = camera_spec.get("target_offset", [0.0, 0.0, 0.85])
-    target.z = center.z * target_offset[2]
+    target_offset = camera_spec.get("target_offset", [0.05, -0.05, 0.80])
+    if isinstance(target_offset, (list, tuple)) and len(target_offset) >= 3:
+        target.x = center.x + radius * target_offset[0]
+        target.y = center.y + radius * target_offset[1]
+        target.z = center.z * target_offset[2]
+    elif isinstance(target_offset, (list, tuple)) and len(target_offset) == 1:
+        target.z = center.z * target_offset[0]
 
     cam_x = target.x + distance * math.cos(elevation) * math.sin(azimuth)
     cam_y = target.y - distance * math.cos(elevation) * math.cos(azimuth)
@@ -254,12 +277,22 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
                 bpy.data.objects.remove(obj, do_unlink=True)
 
     # Ground plane shadow catcher
+    want_shadow = lighting_spec.get("shadow_catcher", False)
     catcher_obj = bpy.data.objects.get("GroundShadowCatcher")
-    if not catcher_obj:
-        bpy.ops.mesh.primitive_plane_add(size=radius * 14.0, location=(0, 0, 0))
-        catcher_obj = bpy.context.active_object
-        catcher_obj.name = "GroundShadowCatcher"
-    catcher_obj.is_shadow_catcher = True
+    if want_shadow:
+        if not catcher_obj:
+            bpy.ops.mesh.primitive_plane_add(size=radius * 14.0, location=(0, 0, 0))
+            catcher_obj = bpy.context.active_object
+            catcher_obj.name = "GroundShadowCatcher"
+        catcher_obj.is_shadow_catcher = True
+        try:
+            catcher_obj.cycles.is_shadow_catcher = True
+        except Exception:
+            pass
+        catcher_obj.data.materials.clear()
+    else:
+        if catcher_obj:
+            bpy.data.objects.remove(catcher_obj, do_unlink=True)
 
     # Setup World Environment Shader
     world = bpy.context.scene.world
@@ -456,7 +489,7 @@ def execute_render_job(manifest: Dict[str, Any]):
                 except Exception:
                     pass
             
-            if hide_isolators and any(k in name_lower for k in ["isolator", "vibration", "puck", "round_foot"]):
+            if hide_isolators and any(k in name_lower for k in ["isolator", "iso_mount", "vibration", "puck", "round_foot", "iso_"]):
                 # Hide external isolators that sit out in front of the skid
                 obj.hide_render = True
                 print(f"[MSP Render] Hiding misplaced external isolator mesh: {obj.name}")
@@ -475,15 +508,75 @@ def execute_render_job(manifest: Dict[str, Any]):
     else:
         setup_camera(manifest.get("camera", {}), center, radius)
 
+    # Ensure clean transparent alpha: inspect all scene meshes and hide any ground/floor/terrain geometry
+    print("[MSP Render] Inspecting scene mesh objects for ground/floor geometry:")
+    ground_keywords = [
+        "ground", "floor", "plane", "backdrop", "cyclorama", "cove", "stage",
+        "dirt", "soil", "mud", "sand", "pit", "terrain", "surface", "earth",
+        "land", "puddle", "asphalt", "landscape", "env", "plate"
+    ]
+    mat_keywords = ["dirt", "soil", "mud", "sand", "ground", "floor", "earth", "brown", "rock", "pit", "terrain"]
+
+    for obj in bpy.context.scene.objects:
+        if obj.type == "MESH" and obj.name != "GroundShadowCatcher":
+            name_lower = obj.name.lower()
+            mat_names = [m.name.lower() for m in obj.data.materials if m]
+            dim = obj.dimensions
+            
+            is_name_match = any(k in name_lower for k in ground_keywords)
+            is_mat_match = any(any(k in mn for k in mat_keywords) for mn in mat_names)
+            # Detect any large flat horizontal slab (much wider/longer than the pump package)
+            is_flat_ground_dim = (dim.x > 5.0 or dim.y > 5.0) and (dim.z < 1.0)
+            is_cube_ground = ("cube" in name_lower and is_flat_ground_dim)
+
+            if is_name_match or is_mat_match or is_flat_ground_dim or is_cube_ground:
+                obj.hide_render = True
+                obj.hide_viewport = True
+                print(f"[MSP Render] -> HID ground/floor object: '{obj.name}' (mats: {mat_names}, dims: {dim.x:.1f}x{dim.y:.1f}x{dim.z:.1f}m)")
+            else:
+                print(f"[MSP Render]    Kept machine mesh: '{obj.name}' (dims: {dim.x:.1f}x{dim.y:.1f}x{dim.z:.1f}m)")
+
     # Lighting
     lighting_spec = manifest.get("lighting", {})
+    want_shadow_catcher = lighting_spec.get("shadow_catcher", False)
+    
+    # Remove any stray GroundShadowCatcher objects to ensure clean transparent alpha
+    for obj in list(bpy.context.scene.objects):
+        if "groundshadowcatcher" in obj.name.lower():
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Reset world background to neutral black to prevent world shader from filling transparency
+    world = bpy.context.scene.world
+    if world and world.use_nodes and world.node_tree:
+        for node in world.node_tree.nodes:
+            if node.type == "BACKGROUND":
+                node.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+                node.inputs["Strength"].default_value = 0.0
+
     if lighting_spec.get("preset") == "preserve_existing" and any(obj.type == 'LIGHT' for obj in bpy.context.scene.objects):
-        print("[MSP Render] Preserving existing scene lighting.")
-        if not any(obj.name == "GroundShadowCatcher" for obj in bpy.context.scene.objects):
+        print("[MSP Render] Preserving existing scene lighting with front fill balancing.")
+        # Add a soft front-quarter fill light so front intake honeycomb and flanged ports are not in deep shadow
+        if not any(obj.name == "Front_Face_Fill" for obj in bpy.context.scene.objects):
+            fill_light_data = bpy.data.lights.new(name="Front_Face_Fill", type='AREA')
+            fill_light_data.energy = 550.0 * (radius ** 1.3)
+            fill_light_data.size = radius * 2.2
+            fill_light_data.color = (1.0, 0.98, 0.95)
+            fill_light_obj = bpy.data.objects.new("Front_Face_Fill", fill_light_data)
+            # Position at front-left (azimuth 35 deg, elevation 20 deg) to fill front louvers & ports
+            fill_light_obj.location = (center.x + radius * 2.6, center.y - radius * 2.6, center.z + radius * 1.8)
+            direction = mathutils.Vector((center.x, center.y, center.z * 0.7)) - fill_light_obj.location
+            fill_light_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+            bpy.context.scene.collection.objects.link(fill_light_obj)
+        if want_shadow_catcher:
             bpy.ops.mesh.primitive_plane_add(size=radius * 12.0, location=(0, 0, 0))
             plane = bpy.context.active_object
             plane.name = "GroundShadowCatcher"
             plane.is_shadow_catcher = True
+            try:
+                plane.cycles.is_shadow_catcher = True
+            except Exception:
+                pass
+            plane.data.materials.clear()
     else:
         setup_lighting(lighting_spec, center, radius)
 

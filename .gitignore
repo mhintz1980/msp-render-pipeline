@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 *.egg-info/
 .eggs/
 build/
@@ -8,9 +9,9 @@ dist/
 .venv/
 venv/
 
-# Render artifacts
+# Generated render output (re-runnable from manifests + CAD sources)
 output/
 
-# OS / editor
+# OS / editor noise
 .DS_Store
 Thumbs.db

@@ -92,11 +92,25 @@ def cmd_dispatch_modal(args):
     cad_path = manifest["cad_source"]["file_path"]
     
     if not os.path.exists(cad_path):
-        print(f"✗ CAD source file not found locally: {cad_path}", file=sys.stderr)
-        sys.exit(1)
+        candidates = [
+            cad_path,
+            os.path.join("3D models", os.path.basename(cad_path)),
+            os.path.join("models", os.path.basename(cad_path)),
+            os.path.join(os.path.dirname(args.manifest), os.path.basename(cad_path)),
+            os.path.basename(cad_path)
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                cad_path = os.path.abspath(c)
+                manifest["cad_source"]["file_path"] = cad_path
+                break
+        else:
+            print(f"✗ CAD source file not found locally: {cad_path}", file=sys.stderr)
+            print(f"  Tip: Ensure the file exists at {cad_path} or drop it in ./3D models/", file=sys.stderr)
+            sys.exit(1)
 
     modal_cmd = [
-        "modal", "run",
+        sys.executable, "-m", "modal", "run",
         os.path.join(os.path.dirname(__file__), "..", "render_worker.py"),
         "--manifest", os.path.abspath(args.manifest)
     ]

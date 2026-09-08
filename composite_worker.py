@@ -1,6 +1,6 @@
 """
 Zero-Loss Product Compositor and Grounding Engine for Myers-Seth Pumps.
-Ensures 100% mechanical pixel preservation while seamlessly embedding machines into job-site plates.
+Ensures complete mechanical pixel preservation while seamlessly embedding machines into job-site plates.
 """
 
 import os

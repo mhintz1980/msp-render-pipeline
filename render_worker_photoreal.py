@@ -1,7 +1,9 @@
-
 from __future__ import annotations
 
 """
+PHOTOREAL VARIANT of render_worker.py - see PHOTOREAL_CHANGES.md.
+The original render_worker.py is untouched; point your CLI at this file to use it.
+
 Headless Blender Render Worker for Myers-Seth Pumps (MSP) Pipeline.
 Supports GLB, OBJ, and native .blend scenes with both local execution
 and remote serverless dispatch via Modal.
@@ -112,7 +114,7 @@ def normalize_model_bounds() -> Tuple[Any, float]:
     new_center = mathutils.Vector((0, 0, dim.z / 2.0))
     return new_center, radius
 
-def apply_livery_materials(livery_spec: Dict[str, Any]):
+def apply_livery_materials(livery_spec: Dict[str, Any], smooth_latches: bool = False):
     """Applies calibrated PBR Principled BSDF powder coat with procedural orange-peel and micro-roughness."""
     body_hex = livery_spec.get("body_color_hex", "#F7B500")
     body_rough = livery_spec.get("body_roughness", 0.35)
@@ -199,16 +201,36 @@ def apply_livery_materials(livery_spec: Dict[str, Any]):
     f_links.new(f_bsdf.outputs["BSDF"], f_output.inputs["Surface"])
 
     # --- Bind materials ---
+ # In render_worker.py — replace lines 212-224 with:
     for obj in bpy.context.scene.objects:
-        if obj.type == 'MESH':
+        if obj.type == "MESH":
             name_lower = obj.name.lower()
-            if any(k in name_lower for k in ["frame", "skid", "base", "bumper", "fork", "trailer", "fender", "axle", "hitch", "tank", "chassis"]):
-                obj.data.materials.clear()
-                obj.data.materials.append(frame_mat)
-            elif any(k in name_lower for k in ["body", "panel", "door", "enclosure", "hood", "roof", "canopy", "louver", "sheet", "cover"]):
-                obj.data.materials.clear()
-                obj.data.materials.append(body_mat)
+            if any(k in name_lower for k in ["latch", "handle", "lock", "hinge", "catch", "recess"]):
+                try:
+                    obj.select_set(True)
+                    bpy.context.view_layer.objects.active = obj
 
+                    # 1. Strip any destructive Subsurf modifiers
+                    for mod in list(obj.modifiers):
+                        if mod.type == "SUBSURF" or mod.name == "Hardware_Subdiv":
+                            obj.modifiers.remove(mod)
+
+                    # 2. Apply non-destructive CAD angle smoothing
+                    if smooth_latches:
+                        try:
+                            # Blender 4.1+ / 5.x
+                            bpy.ops.object.shade_smooth_by_angle(angle=math.radians(30.0))
+                        except Exception:
+                            obj.data.use_auto_smooth = True
+                            obj.data.auto_smooth_angle = math.radians(30.0)
+                            bpy.ops.object.shade_smooth()
+
+                        # 3. Add Weighted Normal to keep planar faces flat and edges crisp
+                        if not any(m.type == "WEIGHTED_NORMAL" for m in obj.modifiers):
+                            wn = obj.modifiers.new(name="Hardware_WeightedNormal", type="WEIGHTED_NORMAL")
+                            wn.keep_sharp = True
+                except Exception:
+                    pass
 
 def setup_camera(camera_spec: Dict[str, Any], center: Any, radius: float):
     """Configures camera placement and target tracking."""
@@ -216,15 +238,16 @@ def setup_camera(camera_spec: Dict[str, Any], center: Any, radius: float):
     elevation = math.radians(camera_spec.get("elevation_deg", 14.0))
     focal_length = camera_spec.get("focal_length_mm", 50.0)
     
-    # Increase distance multiplier from 3.2 to 3.85 to capture the entire enclosure and ceiling
-    dist_mult = camera_spec.get("distance_multiplier", 2.65)
+    dist_mult = camera_spec.get("distance_multiplier", 3.2)
     distance = radius * dist_mult
     target = center.copy()
-    # Target mid-upper height (0.85 of center Z) so the roof and ceiling are fully in frame
-    target_offset = camera_spec.get("target_offset", [0.05, -0.05, 0.95])
-    target.x += target_offset[0]
-    target.y += target_offset
-    target.z = center.z * target_offset
+    target_offset = camera_spec.get("target_offset", [0.05, -0.05, 0.80])
+    if isinstance(target_offset, (list, tuple)) and len(target_offset) >= 3:
+        target.x = center.x + radius * target_offset[0]
+        target.y = center.y + radius * target_offset[1]
+        target.z = center.z * target_offset[2]
+    elif isinstance(target_offset, (list, tuple)) and len(target_offset) == 1:
+        target.z = center.z * target_offset[0]
 
     cam_x = target.x + distance * math.cos(elevation) * math.sin(azimuth)
     cam_y = target.y - distance * math.cos(elevation) * math.cos(azimuth)
@@ -257,12 +280,22 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
                 bpy.data.objects.remove(obj, do_unlink=True)
 
     # Ground plane shadow catcher
+    want_shadow = lighting_spec.get("shadow_catcher", False)
     catcher_obj = bpy.data.objects.get("GroundShadowCatcher")
-    if not catcher_obj:
-        bpy.ops.mesh.primitive_plane_add(size=radius * 14.0, location=(0, 0, 0))
-        catcher_obj = bpy.context.active_object
-        catcher_obj.name = "GroundShadowCatcher"
-    catcher_obj.is_shadow_catcher = True
+    if want_shadow:
+        if not catcher_obj:
+            bpy.ops.mesh.primitive_plane_add(size=radius * 14.0, location=(0, 0, 0))
+            catcher_obj = bpy.context.active_object
+            catcher_obj.name = "GroundShadowCatcher"
+        catcher_obj.is_shadow_catcher = True
+        try:
+            catcher_obj.cycles.is_shadow_catcher = True
+        except Exception:
+            pass
+        catcher_obj.data.materials.clear()
+    else:
+        if catcher_obj:
+            bpy.data.objects.remove(catcher_obj, do_unlink=True)
 
     # Setup World Environment Shader
     world = bpy.context.scene.world
@@ -291,22 +324,38 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
         w_links.new(tex_coord.outputs["Generated"], mapping.inputs["Vector"])
         w_links.new(mapping.outputs["Vector"], env_tex.inputs["Vector"])
         w_links.new(env_tex.outputs["Color"], bg_node.inputs["Color"])
-        bg_node.inputs["Strength"].default_value = 1.0 * intensity
+        mapping.inputs["Rotation"].default_value[2] = math.radians(
+            lighting_spec.get("hdri_rotation_deg", 0.0))
+        bg_node.inputs["Strength"].default_value = (
+            lighting_spec.get("hdri_strength", 1.0) * intensity)
     elif preset == "excavation_pit_sunlit":
         try:
             sky_tex = w_nodes.new(type="ShaderNodeTexSky")
             sky_tex.location = (-200, 0)
-            sky_tex.sky_type = 'NISHITA'
+            # Blender 5.x renamed the Nishita model; 'NISHITA' is no longer a valid
+            # enum item and assigning it raises, which silently dropped the whole sky.
+            _sky_enum = sky_tex.bl_rna.properties['sky_type'].enum_items.keys()
+            for _cand in ('MULTIPLE_SCATTERING', 'NISHITA', 'SINGLE_SCATTERING', 'HOSEK_WILKIE'):
+                if _cand in _sky_enum:
+                    sky_tex.sky_type = _cand
+                    break
             sky_tex.sun_disc = True
             sky_tex.sun_elevation = math.radians(38.0)
             sky_tex.sun_rotation = math.radians(-35.0)
             sky_tex.altitude = 15.0
             sky_tex.air_density = 1.0
-            sky_tex.dust_density = 1.3
+            # 'dust_density' was renamed to 'aerosol_density' in Blender 4.x/5.x.
+            if hasattr(sky_tex, 'aerosol_density'):
+                sky_tex.aerosol_density = 1.3
+            elif hasattr(sky_tex, 'dust_density'):
+                sky_tex.dust_density = 1.3
             sky_tex.ozone_density = 1.0
             w_links.new(sky_tex.outputs["Color"], bg_node.inputs["Color"])
             bg_node.inputs["Strength"].default_value = 0.85 * intensity
-        except Exception:
+        except Exception as _sky_err:
+            # Do not fail silently: a flat blue background is a very different render.
+            print(f"[MSP Render] WARNING: physical sky setup failed ({_sky_err}). "
+                  f"Falling back to FLAT ambient - metals will look washed out.")
             bg_node.inputs["Color"].default_value = (0.75, 0.85, 1.0, 1.0)
             bg_node.inputs["Strength"].default_value = 0.60 * intensity
     else:
@@ -357,6 +406,154 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
         bounce_obj = bpy.data.objects.new("Ground_Soil_Bounce", bounce_data)
         bounce_obj.rotation_euler = (math.radians(-65), math.radians(10), math.radians(145))
         bpy.context.scene.collection.objects.link(bounce_obj)
+
+
+# ==============================================================================
+# PHOTOREALISM PASS  (added in render_worker_photoreal.py)
+# ==============================================================================
+
+def _principled_nodes(mat):
+    if not getattr(mat, "use_nodes", False) or mat.node_tree is None:
+        return []
+    return [n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
+
+
+def inject_bevel_shading(radius: float = 0.0004, samples: int = 4,
+                         skip_keywords=("glass", "airway", "volume", "shadow")):
+    """Round every mathematically-sharp CAD edge at shading time.
+
+    CAD geometry has zero-radius edges, so no edge ever catches a specular
+    highlight - the single strongest 'this is a CAD render' tell. A Bevel node
+    fixes it for the whole scene at zero geometry and zero file-size cost.
+    Cycles only; the node is a no-op under EEVEE/Workbench.
+    """
+    touched = 0
+    for mat in bpy.data.materials:
+        if any(k in mat.name.lower() for k in skip_keywords):
+            continue
+        bsdfs = _principled_nodes(mat)
+        if not bsdfs:
+            continue
+        nt = mat.node_tree
+        if any(n.type == "BEVEL" for n in nt.nodes):
+            continue
+        bevel = nt.nodes.new("ShaderNodeBevel")
+        bevel.samples = samples
+        bevel.inputs["Radius"].default_value = radius
+        bevel.location = (-1000, 400)
+        wired = False
+        for bsdf in bsdfs:
+            nin = bsdf.inputs.get("Normal")
+            if nin is None:
+                continue
+            if nin.is_linked:
+                # Feed the existing bump/normal-map node instead of replacing it,
+                # so procedural surface texture and edge rounding both survive.
+                upstream = nin.links[0].from_node
+                slot = upstream.inputs.get("Normal")
+                if slot is not None and not slot.is_linked:
+                    nt.links.new(bevel.outputs["Normal"], slot)
+                    wired = True
+            else:
+                nt.links.new(bevel.outputs["Normal"], nin)
+                wired = True
+        if wired:
+            touched += 1
+        else:
+            nt.nodes.remove(bevel)
+    print(f"[MSP Render] Bevel shading injected into {touched} materials "
+          f"(radius {radius * 1000:.2f} mm).")
+    return touched
+
+
+def apply_cycles_quality(scene, quality: Dict[str, Any]):
+    """Light-transport settings that matter for brushed/plated metal hardware."""
+    if scene.render.engine != "CYCLES":
+        return
+    c = scene.cycles
+    c.max_bounces = quality.get("max_bounces", 12)
+    c.diffuse_bounces = quality.get("diffuse_bounces", 4)
+    c.glossy_bounces = quality.get("glossy_bounces", 8)
+    c.transmission_bounces = quality.get("transmission_bounces", 8)
+    c.transparent_max_bounces = quality.get("transparent_bounces", 8)
+    c.sample_clamp_indirect = quality.get("clamp_indirect", 10.0)
+    c.blur_glossy = quality.get("blur_glossy", 0.5)
+    for attr, key, default in (("use_light_tree", "light_tree", True),
+                               ("use_adaptive_sampling", "adaptive_sampling", True),
+                               ("caustics_reflective", "caustics_reflective", True),
+                               ("caustics_refractive", "caustics_refractive", False)):
+        try:
+            setattr(c, attr, quality.get(key, default))
+        except Exception:
+            pass
+    try:
+        c.adaptive_threshold = quality.get("adaptive_threshold", 0.01)
+    except Exception:
+        pass
+    try:
+        scene.render.use_persistent_data = True
+    except Exception:
+        pass
+    print(f"[MSP Render] Cycles quality: {c.samples} samples, "
+          f"{c.max_bounces} bounces, glossy {c.glossy_bounces}.")
+
+
+def apply_color_management(scene, color_spec: Dict[str, Any]):
+    vs = scene.view_settings
+    try:
+        scene.display_settings.display_device = color_spec.get("display_device", "sRGB")
+    except Exception:
+        pass
+    for attr, key, default in (("view_transform", "view_transform", "AgX"),
+                               ("look", "look", "AgX - Medium High Contrast")):
+        want = color_spec.get(key, default)
+        try:
+            setattr(vs, attr, want)
+        except Exception:
+            print(f"[MSP Render] Color management: '{want}' unavailable for {attr}.")
+    try:
+        vs.exposure = color_spec.get("exposure", 0.0)
+        vs.gamma = color_spec.get("gamma", 1.0)
+    except Exception:
+        pass
+    print(f"[MSP Render] Color: {vs.view_transform} / {vs.look} / exposure {vs.exposure}.")
+
+
+def apply_depth_of_field(scene, camera_spec: Dict[str, Any], target):
+    """Real product photography is never uniformly sharp front to back."""
+    dof_spec = camera_spec.get("depth_of_field") or {}
+    cam_obj = scene.camera
+    if not cam_obj or not dof_spec.get("enabled", False):
+        return
+    cam = cam_obj.data
+    cam.dof.use_dof = True
+    cam.dof.aperture_fstop = dof_spec.get("f_stop", 8.0)
+    cam.dof.aperture_blades = dof_spec.get("blades", 8)
+    focus_name = dof_spec.get("focus_object")
+    focus_obj = bpy.data.objects.get(focus_name) if focus_name else None
+    if focus_obj:
+        cam.dof.focus_object = focus_obj
+    else:
+        cam.dof.focus_distance = dof_spec.get(
+            "focus_distance", (target - cam_obj.location).length)
+    print(f"[MSP Render] DOF on: f/{cam.dof.aperture_fstop} at "
+          f"{cam.dof.focus_distance:.2f} m.")
+
+
+def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
+    """Every photorealism upgrade that costs no geometry and no file size."""
+    photo = manifest.get("photoreal", {})
+    if not photo.get("enabled", True):
+        print("[MSP Render] Photoreal pass disabled by manifest.")
+        return
+    bevel = photo.get("bevel", {})
+    if bevel.get("enabled", True):
+        inject_bevel_shading(radius=bevel.get("radius_m", 0.0004),
+                             samples=bevel.get("samples", 4))
+    apply_cycles_quality(scene, photo.get("quality", {}))
+    apply_color_management(scene, manifest.get("output", {}).get("color", {}))
+    if target is not None:
+        apply_depth_of_field(scene, manifest.get("camera", {}), target)
 
 
 def setup_compositor_multipass(output_dir: str):
@@ -451,6 +648,12 @@ def execute_render_job(manifest: Dict[str, Any]):
                 try:
                     obj.select_set(True)
                     bpy.context.view_layer.objects.active = obj
+                    # CAD exports carry custom split normals; shade_smooth()/SUBSURF
+                    # destroys them and makes flat machined faces look melted.
+                    if getattr(obj.data, "has_custom_normals", False):
+                        print(f"[MSP Render] Skipping smoothing on {obj.name} "
+                              f"(has CAD custom normals).")
+                        continue
                     bpy.ops.object.shade_smooth()
                     if not any(m.type == "SUBSURF" for m in obj.modifiers):
                         sub = obj.modifiers.new(name="Hardware_Subdiv", type="SUBSURF")
@@ -459,7 +662,7 @@ def execute_render_job(manifest: Dict[str, Any]):
                 except Exception:
                     pass
             
-            if hide_isolators and any(k in name_lower for k in ["isolator", "vibration", "puck", "round_foot"]):
+            if hide_isolators and any(k in name_lower for k in ["isolator", "iso_mount", "vibration", "puck", "round_foot", "iso_"]):
                 # Hide external isolators that sit out in front of the skid
                 obj.hide_render = True
                 print(f"[MSP Render] Hiding misplaced external isolator mesh: {obj.name}")
@@ -473,20 +676,99 @@ def execute_render_job(manifest: Dict[str, Any]):
 
     # Camera
     cam_preset = manifest.get("camera", {}).get("preset", "P1_FRONT_ISO")
-    if cam_preset in ["USE_SCENE_CAMERA", "PRESERVE_EXISTING"] and bpy.context.scene.camera:
+    # Allow a manifest to name a specific camera that already lives in the .blend.
+    # Close-up detail shots are far easier to aim by placing a camera in the file
+    # than by tuning azimuth/elevation/target_offset ratios against scene bounds.
+    wanted_cam = manifest.get("camera", {}).get("scene_camera_name")
+    if wanted_cam:
+        cam_obj = bpy.data.objects.get(wanted_cam)
+        if cam_obj and cam_obj.type == 'CAMERA':
+            bpy.context.scene.camera = cam_obj
+            print(f"[MSP Render] Using named scene camera: {wanted_cam}")
+        else:
+            available = [o.name for o in bpy.data.objects if o.type == 'CAMERA']
+            raise KeyError(f"camera.scene_camera_name '{wanted_cam}' not found. "
+                           f"Cameras in file: {available}")
+    elif cam_preset in ["USE_SCENE_CAMERA", "PRESERVE_EXISTING"] and bpy.context.scene.camera:
         print(f"[MSP Render] Using existing scene camera: {bpy.context.scene.camera.name}")
     else:
         setup_camera(manifest.get("camera", {}), center, radius)
 
+    # Ensure clean transparent alpha: inspect all scene meshes and hide any ground/floor/terrain geometry
+    print("[MSP Render] Inspecting scene mesh objects for ground/floor geometry:")
+    ground_keywords = [
+        "ground", "floor", "plane", "backdrop", "cyclorama", "cove", "stage",
+        "dirt", "soil", "mud", "sand", "pit", "terrain", "surface", "earth",
+        "land", "puddle", "asphalt", "landscape", "env", "plate"
+    ]
+    mat_keywords = ["dirt", "soil", "mud", "sand", "ground", "floor", "earth", "brown", "rock", "pit", "terrain"]
+
+    for obj in bpy.context.scene.objects:
+        if obj.type == "MESH" and obj.name != "GroundShadowCatcher":
+            name_lower = obj.name.lower()
+            mat_names = [m.name.lower() for m in obj.data.materials if m]
+            dim = obj.dimensions
+            
+            is_name_match = any(k in name_lower for k in ground_keywords)
+            is_mat_match = any(any(k in mn for k in mat_keywords) for mn in mat_names)
+            # Detect any large flat horizontal slab (much wider/longer than the pump package)
+            # A skid rail or a long side panel can easily be >5 m and <1 m tall.
+            # Only treat something as ground if it is genuinely slab-like AND
+            # centred near z=0, so structural members are never silently dropped.
+            _z_centre = abs(obj.matrix_world.translation.z)
+            is_flat_ground_dim = (
+                (dim.x > 8.0 and dim.y > 8.0) and dim.z < 0.25 and _z_centre < 0.5
+            )
+            is_cube_ground = ("cube" in name_lower and is_flat_ground_dim)
+
+            if is_name_match or is_mat_match or is_flat_ground_dim or is_cube_ground:
+                obj.hide_render = True
+                obj.hide_viewport = True
+                print(f"[MSP Render] -> HID ground/floor object: '{obj.name}' (mats: {mat_names}, dims: {dim.x:.1f}x{dim.y:.1f}x{dim.z:.1f}m)")
+            else:
+                print(f"[MSP Render]    Kept machine mesh: '{obj.name}' (dims: {dim.x:.1f}x{dim.y:.1f}x{dim.z:.1f}m)")
+
     # Lighting
     lighting_spec = manifest.get("lighting", {})
+    want_shadow_catcher = lighting_spec.get("shadow_catcher", False)
+    
+    # Remove any stray GroundShadowCatcher objects to ensure clean transparent alpha
+    for obj in list(bpy.context.scene.objects):
+        if "groundshadowcatcher" in obj.name.lower():
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Reset world background to neutral black to prevent world shader from filling transparency
+    world = bpy.context.scene.world
+    if world and world.use_nodes and world.node_tree:
+        for node in world.node_tree.nodes:
+            if node.type == "BACKGROUND":
+                node.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+                node.inputs["Strength"].default_value = 0.0
+
     if lighting_spec.get("preset") == "preserve_existing" and any(obj.type == 'LIGHT' for obj in bpy.context.scene.objects):
-        print("[MSP Render] Preserving existing scene lighting.")
-        if not any(obj.name == "GroundShadowCatcher" for obj in bpy.context.scene.objects):
+        print("[MSP Render] Preserving existing scene lighting with front fill balancing.")
+        # Add a soft front-quarter fill light so front intake honeycomb and flanged ports are not in deep shadow
+        if not any(obj.name == "Front_Face_Fill" for obj in bpy.context.scene.objects):
+            fill_light_data = bpy.data.lights.new(name="Front_Face_Fill", type='AREA')
+            fill_light_data.energy = 550.0 * (radius ** 1.3)
+            fill_light_data.size = radius * 2.2
+            fill_light_data.color = (1.0, 0.98, 0.95)
+            fill_light_obj = bpy.data.objects.new("Front_Face_Fill", fill_light_data)
+            # Position at front-left (azimuth 35 deg, elevation 20 deg) to fill front louvers & ports
+            fill_light_obj.location = (center.x + radius * 2.6, center.y - radius * 2.6, center.z + radius * 1.8)
+            direction = mathutils.Vector((center.x, center.y, center.z * 0.7)) - fill_light_obj.location
+            fill_light_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+            bpy.context.scene.collection.objects.link(fill_light_obj)
+        if want_shadow_catcher:
             bpy.ops.mesh.primitive_plane_add(size=radius * 12.0, location=(0, 0, 0))
             plane = bpy.context.active_object
             plane.name = "GroundShadowCatcher"
             plane.is_shadow_catcher = True
+            try:
+                plane.cycles.is_shadow_catcher = True
+            except Exception:
+                pass
+            plane.data.materials.clear()
     else:
         setup_lighting(lighting_spec, center, radius)
 
@@ -510,9 +792,31 @@ def execute_render_job(manifest: Dict[str, Any]):
         try:
             cycles.device = 'GPU'
             prefs = bpy.context.preferences.addons['cycles'].preferences
-            prefs.compute_device_type = 'OPTIX'
+            # Picking a backend is not enough - each device must be switched on,
+            # otherwise Cycles silently falls back to CPU on the Modal worker.
+            for _backend in ('OPTIX', 'CUDA'):
+                try:
+                    prefs.compute_device_type = _backend
+                    prefs.get_devices()
+                    _on = [d for d in prefs.devices if d.type == _backend]
+                    if _on:
+                        for d in prefs.devices:
+                            d.use = (d.type == _backend)
+                        print(f"[MSP Render] GPU backend {_backend}: "
+                              f"{[d.name for d in _on]}")
+                        break
+                except Exception:
+                    continue
+            else:
+                print('[MSP Render] WARNING: no GPU device enabled, rendering on CPU.')
         except Exception:
             pass
+
+    # --- photorealism pass (bevel shading, light transport, colour, DOF) ---
+    try:
+        apply_photoreal_pass(scene, manifest, target=center)
+    except Exception as e:
+        print(f"[MSP Render] WARNING: photoreal pass failed: {e}")
 
     try:
         setup_compositor_multipass(output_dir)
