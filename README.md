@@ -85,6 +85,7 @@ seconds, instead of two minutes into a render.
 .\demo\1-render-no-background.ps1   # transparent cut-out
 .\demo\2-render-studio-background.ps1
 .\demo\3-render-pit-background.ps1
+.\demo\4-render-jgun.ps1            # optional: a second product, same pipeline
 ```
 
 See **[DEMO.md](DEMO.md)** for the walkthrough script and what to say at each step.
@@ -100,6 +101,25 @@ Seat the machine on the plate with `compositing.product_offset_pct` — a fracti
 the canvas, so placement tuned on a fast low-resolution preview lands identically on
 the full-resolution final. Resize it with `camera.distance_multiplier` rather than
 `product_scale`, so the render is never resampled.
+
+A plate needs a clear foreground surface in the lower third for the product to stand
+on, an obvious light direction (it is also the light rig), and enough resolution to
+cover the render — at least 1800 px wide.
+
+## Adding a new product
+
+`jobs/jgun_01_no-background.json` is the worked example: a 250 mm torque wrench from
+a `.glb`, versus a 3.4 m trailer package from a `.blend`. Three things usually need
+attention on a new model:
+
+- **Camera angle.** A flat-lying tool wants a high three-quarter view (elevation 34°);
+  a tall package wants a low hero angle (11°).
+- **Bevel radius.** `photoreal.bevel.radius_m` is an absolute distance, so scale it
+  with the product — 0.4 mm on the RL300, 0.12 mm on the JGun.
+- **`material_polish`.** CAD exports arrive with one auto-named material per face
+  colour and no surface properties at all, which Cycles renders as chalk or as wet
+  plastic. Enabling this keeps every authored colour and only fixes roughness and
+  metallic. Leave it off for a `.blend` whose materials have already been art-directed.
 
 ## Tests
 

@@ -146,6 +146,35 @@ class TestMSPRenderPipeline(unittest.TestCase):
                 MSPCompositor.composite_asset(
                     blank, bg_path, os.path.join(tmpdir, "out.png"))
 
+    def test_locked_output_falls_back_instead_of_losing_the_render(self):
+        """
+        Re-running a job while the previous image is open in a viewer must not
+        throw away a render that already cost GPU time.
+        """
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prod_path, bg_path = self._synthetic_job(tmpdir)
+            out_path = os.path.join(tmpdir, "final.png")
+            Image.new("RGB", (10, 10)).save(out_path)  # the "locked" file
+
+            real_replace = os.replace
+            calls = {"n": 0}
+
+            def flaky_replace(src, dst):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise OSError(22, "Invalid argument")
+                return real_replace(src, dst)
+
+            with mock.patch("composite_worker.os.replace", flaky_replace):
+                res = MSPCompositor.composite_asset(prod_path, bg_path, out_path)
+
+            self.assertNotEqual(res["output_path"], os.path.abspath(out_path))
+            self.assertTrue(os.path.exists(res["output_path"]))
+            self.assertTrue(res["fidelity_gate_pass"])
+            leftovers = [f for f in os.listdir(tmpdir) if f.endswith(".tmp.png")]
+            self.assertEqual(leftovers, [], "Temp file left behind.")
+
     def test_plate_is_fitted_to_the_render_not_the_reverse(self):
         """The hero render must never be resampled to match the plate."""
         with tempfile.TemporaryDirectory() as tmpdir:

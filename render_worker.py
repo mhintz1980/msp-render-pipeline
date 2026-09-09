@@ -110,9 +110,23 @@ def normalize_model_bounds() -> Tuple[Any, float]:
     radius = max(dim.x, dim.y, dim.z) / 2.0
 
     offset = mathutils.Vector((-center.x, -center.y, -min_corner.z))
+
+    # Move the top-most ancestor of every mesh, not just meshes that happen to
+    # be unparented. glTF/GLB exports nest their geometry under node empties, so
+    # the old `if obj.parent is None` test matched nothing at all: the model
+    # stayed where it was while the camera aimed at the origin, and the product
+    # rendered cropped and off-centre.
+    roots = []
     for obj in all_objs:
-        if obj.parent is None:
-            obj.location += offset
+        root = obj
+        while root.parent is not None:
+            root = root.parent
+        if root not in roots:
+            roots.append(root)
+    for root in roots:
+        root.location += offset
+
+    bpy.context.view_layer.update()
 
     new_center = mathutils.Vector((0, 0, dim.z / 2.0))
     return new_center, radius
@@ -440,6 +454,64 @@ def _principled_nodes(mat):
     return [n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
 
 
+def polish_cad_materials(spec: Dict[str, Any]):
+    """
+    Gives untouched CAD materials a believable surface response.
+
+    A GLB straight out of SolidWorks carries one auto-named material per face
+    colour, with roughness and metallic both left at 0. Cycles renders that as
+    wet plastic. This keeps every authored base colour exactly as-is and only
+    sets the surface properties: dark parts read as machined/anodised metal,
+    light parts as brushed alloy, and anything already given a non-default
+    roughness by an artist is left alone.
+    """
+    if not spec.get("enabled", False):
+        return
+
+    default_rough = spec.get("default_roughness", 0.42)
+    dark_metallic = spec.get("dark_metallic", 0.85)
+    light_metallic = spec.get("light_metallic", 0.55)
+    dark_threshold = spec.get("dark_threshold", 0.16)
+
+    touched = 0
+    for mat in bpy.data.materials:
+        for bsdf in _principled_nodes(mat):
+            rough_in = bsdf.inputs.get("Roughness")
+            metal_in = bsdf.inputs.get("Metallic")
+            base_in = bsdf.inputs.get("Base Color")
+            if rough_in is None or metal_in is None:
+                continue
+            # Only rescue materials still sitting at the importer's defaults -
+            # glTF hands every untextured CAD colour roughness 1.0 / metallic 0,
+            # which Cycles renders as chalk. Never overwrite a deliberate look.
+            if rough_in.is_linked or metal_in.is_linked:
+                continue
+            is_gltf_default = (rough_in.default_value >= 0.999
+                               and metal_in.default_value <= 0.001)
+            is_zero_default = rough_in.default_value <= 0.01
+            if not (is_gltf_default or is_zero_default):
+                continue
+
+            luminance = 0.5
+            if base_in is not None and not base_in.is_linked:
+                r, g, b = base_in.default_value[:3]
+                luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+            if luminance < dark_threshold:
+                rough_in.default_value = min(0.95, default_rough + 0.10)
+                metal_in.default_value = dark_metallic
+            else:
+                rough_in.default_value = default_rough
+                metal_in.default_value = light_metallic
+
+            coat = bsdf.inputs.get("Coat Weight")
+            if coat is not None and not coat.is_linked and coat.default_value == 0.0:
+                coat.default_value = 0.05
+            touched += 1
+
+    print(f"[MSP Render] Material polish applied to {touched} CAD material(s).")
+
+
 def inject_bevel_shading(radius: float = 0.0004, samples: int = 4,
                          skip_keywords=("glass", "airway", "volume", "shadow")):
     """Round every mathematically-sharp CAD edge at shading time.
@@ -568,6 +640,10 @@ def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
     if not photo.get("enabled", True):
         print("[MSP Render] Photoreal pass disabled by manifest.")
         return
+    # Surface response first, then bevel - inject_bevel_shading rewires the
+    # Normal input and must see the final node graph.
+    polish_cad_materials(manifest.get("material_polish", {}))
+
     bevel = photo.get("bevel", {})
     if bevel.get("enabled", True):
         inject_bevel_shading(radius=bevel.get("radius_m", 0.0004),

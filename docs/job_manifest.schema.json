@@ -135,6 +135,24 @@
       }
     },
 
+    "material_polish": {
+      "type": "object",
+      "description": "Fixes the surface response of raw CAD materials without changing a single authored colour. glTF imports every untextured CAD colour at roughness 1.0 / metallic 0, which Cycles renders as chalk. Leave disabled for a .blend whose materials have already been art-directed - it only ever touches materials still at importer defaults.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "_note": { "type": "string" },
+        "default_roughness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dark_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Relative luminance below which a colour is treated as a dark machined/anodised part rather than a light alloy one."
+        },
+        "dark_metallic": { "type": "number", "minimum": 0, "maximum": 1 },
+        "light_metallic": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+
     "photoreal": {
       "type": "object",
       "properties": {

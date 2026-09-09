@@ -1,0 +1,98 @@
+{
+  "job_id": "jgun_01_no-background",
+  "package_model": "JGUN_TORQUE_WRENCH",
+  "_description": "JGun master render: transparent film, no background. The tool is ~250 x 290 x 93 mm and imports lying flat, so this uses a high three-quarter camera and a scaled-down bevel rather than the RL300's low hero angle.",
+  "cad_source": {
+    "file_path": "C:/Projects/CAD/RL300-SAFE/jgun-full.glb",
+    "format": "glb",
+    "up_axis": "Z",
+    "unit_scale": 1.0
+  },
+  "camera": {
+    "preset": "CUSTOM",
+    "focal_length_mm": 85.0,
+    "elevation_deg": 34.0,
+    "azimuth_deg": 38.0,
+    "distance_multiplier": 6.2,
+    "target_offset": [
+      0.0,
+      0.0,
+      1.45
+    ],
+    "depth_of_field": {
+      "enabled": true,
+      "f_stop": 14.0,
+      "blades": 8
+    }
+  },
+  "geometry": {
+    "smooth_hardware": false,
+    "hide_misplaced_isolators": false
+  },
+  "livery": {
+    "preset": "preserve_existing"
+  },
+  "material_polish": {
+    "enabled": true,
+    "_note": "The GLB carries 36 auto-generated CAD materials whose names encode a flat RGB colour and which glTF imports at roughness 1.0 / metallic 0 - Cycles renders that as chalk. This keeps every colour exactly as authored and only fixes the surface response.",
+    "default_roughness": 0.38,
+    "dark_metallic": 0.3,
+    "dark_threshold": 0.16,
+    "light_metallic": 0.7
+  },
+  "lighting": {
+    "preset": "studio_dark",
+    "intensity_multiplier": 1.15,
+    "analytic_lights": true,
+    "shadow_catcher": false,
+    "hdri_path": null
+  },
+  "photoreal": {
+    "enabled": true,
+    "bevel": {
+      "enabled": true,
+      "radius_m": 0.00012,
+      "samples": 4
+    },
+    "quality": {
+      "max_bounces": 10,
+      "diffuse_bounces": 3,
+      "glossy_bounces": 8,
+      "transmission_bounces": 6,
+      "transparent_bounces": 8,
+      "clamp_indirect": 10.0,
+      "blur_glossy": 1.0,
+      "light_tree": true,
+      "adaptive_sampling": true,
+      "adaptive_threshold": 0.02,
+      "caustics_reflective": false,
+      "caustics_refractive": false
+    }
+  },
+  "output": {
+    "width": 1800,
+    "height": 1250,
+    "samples": 128,
+    "engine": "CYCLES",
+    "denoiser": "OPENIMAGEDENOISE",
+    "color": {
+      "view_transform": "AgX",
+      "look": "AgX - Medium High Contrast",
+      "exposure": 0.15,
+      "gamma": 1.0
+    },
+    "passes": {
+      "beauty": true,
+      "alpha_mask": true,
+      "depth_map": false,
+      "surface_normals": false,
+      "contact_shadow": false
+    },
+    "output_dir": "./output/jgun_01_no-background"
+  },
+  "compositing": {
+    "enabled": false,
+    "background_plate": null,
+    "shadow_opacity": 0.85
+  }
+}

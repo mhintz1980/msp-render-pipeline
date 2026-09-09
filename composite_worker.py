@@ -114,6 +114,39 @@ class MSPCompositor:
         canvas.paste(scaled, (x, y), scaled)
         return canvas
 
+    @staticmethod
+    def _save_robustly(image: Image.Image, output_image_path: str) -> str:
+        """
+        Writes the finished image, surviving a viewer holding the old one open.
+
+        On Windows, re-running a job while the previous result is still open in
+        Photos makes a plain save fail with EINVAL - which is exactly what
+        happens when you run a demo step twice. Writing to a sibling temp file
+        and renaming over the target succeeds even against an open viewer; if
+        the rename is refused too, fall back to a numbered filename rather than
+        losing a render that has already been paid for in GPU time.
+        """
+        out_path = os.path.abspath(output_image_path)
+        out_dir = os.path.dirname(out_path)
+        os.makedirs(out_dir, exist_ok=True)
+
+        tmp_path = out_path + ".tmp.png"
+        image.save(tmp_path, "PNG")
+        try:
+            os.replace(tmp_path, out_path)
+            return out_path
+        except OSError:
+            stem, ext = os.path.splitext(out_path)
+            for n in range(1, 100):
+                alt = f"{stem}_{n:02d}{ext}"
+                if not os.path.exists(alt):
+                    os.replace(tmp_path, alt)
+                    print(f"  ! {os.path.basename(out_path)} is open in another "
+                          f"program; wrote {os.path.basename(alt)} instead.")
+                    return alt
+            os.remove(tmp_path)
+            raise
+
     @classmethod
     def composite_asset(
         cls,
@@ -173,9 +206,7 @@ class MSPCompositor:
         final_comp = shadowed_bg.copy()
         final_comp.paste(prod_img, (0, 0), mask)
 
-        out_dir = os.path.dirname(os.path.abspath(output_image_path))
-        os.makedirs(out_dir, exist_ok=True)
-        final_comp.save(output_image_path, "PNG")
+        output_image_path = cls._save_robustly(final_comp, output_image_path)
 
         # --- Product Pixel Integrity Gate ---------------------------------------
         prod_np = np.array(prod_img.convert("RGB"))

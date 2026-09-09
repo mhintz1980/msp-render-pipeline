@@ -92,6 +92,35 @@ Point at:
 
 ---
 
+## Optional step 4 — a completely different product
+
+```powershell
+.\demo\4-render-jgun.ps1
+```
+
+**Roughly 70 seconds.** `jgun-full.glb` is a ~250 mm pneumatic torque wrench —
+a hundred times smaller than the RL300 package, a different file format, and
+36 raw CAD materials that had never been shaded.
+
+> "Nothing in the pipeline was written for this tool. It's another job file."
+
+This one has no background plate yet, so it stops at the transparent master.
+Once a plate exists it becomes exactly the same three steps as the RL300.
+
+**To add an environment for it,** you need a photograph with:
+- a clear, unobstructed foreground surface in the lower third to stand the tool
+  on — a workbench, a tool crib shelf, a pipeline flange, a rig deck;
+- visible light sources or an obvious light direction, since the same image also
+  becomes the light rig;
+- roughly a 3:2 frame, at least 1800 px wide.
+
+Save it as `backgrounds\env_jgun-<name>.png`, copy
+`jobs\jgun_01_no-background.json`, and change three things: `lighting.hdri_path`,
+`compositing.background_plate`, and `compositing.enabled` → `true`. Then tune
+where it sits with `compositing.product_offset_pct`.
+
+---
+
 ## The point to land
 
 Every image is a JSON file plus a photograph. Nothing is hand-painted, so nothing
@@ -108,6 +137,8 @@ product line needs doing at once.
 
 | Symptom | Fix |
 |---|---|
+| `WARNING CUEW initialization failed` scrolls past | Harmless and always present. Blender probes for an NVIDIA driver, doesn't find one on this AMD laptop, and uses HIP instead. Ignore it. |
+| The previous image is still open in Photos | Handled. The compositor renames over the open file; if Windows refuses, it writes `..._01.png` and says so. |
 | `Blender was not found` | `--blender-bin "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"` |
 | `CAD source NOT FOUND` | The `.blend` moved. `cad\RL300-SAFE-photoreal.blend` in this repo is an identical copy — point `cad_source.file_path` at it. |
 | A render is slow | The console prints its GPU backend. If it says *no GPU device enabled*, it is on CPU; drop `output.samples` to 48 for the demo. |

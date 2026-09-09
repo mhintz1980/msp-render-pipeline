@@ -25,7 +25,8 @@ if ($LASTEXITCODE -ne 0) { $failed++ }
 
 foreach ($job in @("rl300_01_no-background",
                    "rl300_02_studio-dark",
-                   "rl300_03_excavation-pit")) {
+                   "rl300_03_excavation-pit",
+                   "jgun_01_no-background")) {
     Write-Host ""
     Write-Host "--- $job ---" -ForegroundColor Cyan
     python -m msp_render_cli validate "jobs/$job.json"
