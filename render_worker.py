@@ -2,8 +2,14 @@ from __future__ import annotations
 
 """
 Headless Blender Render Worker for Myers-Seth Pumps (MSP) Pipeline.
-Supports GLB, OBJ, and native .blend scenes with both local execution
-and remote serverless dispatch via Modal.
+
+Photorealistic Cycles renderer. Supports GLB, OBJ, and native .blend scenes,
+with both local execution and remote serverless dispatch via Modal.
+Renders on a transparent film so the product can be composited onto any
+background plate afterwards by composite_worker.py.
+
+The pre-photoreal version of this file is kept at archive/render_worker_legacy.py
+for reference only; see docs/PHOTOREAL_CHANGES.md for the delta.
 """
 
 import sys
@@ -111,7 +117,7 @@ def normalize_model_bounds() -> Tuple[Any, float]:
     new_center = mathutils.Vector((0, 0, dim.z / 2.0))
     return new_center, radius
 
-def apply_livery_materials(livery_spec: Dict[str, Any]):
+def apply_livery_materials(livery_spec: Dict[str, Any], smooth_latches: bool = False):
     """Applies calibrated PBR Principled BSDF powder coat with procedural orange-peel and micro-roughness."""
     body_hex = livery_spec.get("body_color_hex", "#F7B500")
     body_rough = livery_spec.get("body_roughness", 0.35)
@@ -269,6 +275,14 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
     preset = lighting_spec.get("preset", "studio_dark")
     intensity = lighting_spec.get("intensity_multiplier", 1.0)
     hdri_path = lighting_spec.get("hdri_path")
+    # A manifest that names an HDRI but whose file is missing must be loud about
+    # it: the render still succeeds, it just quietly loses all image-based
+    # lighting, which is exactly the difference the demo is meant to show.
+    if hdri_path and not os.path.exists(hdri_path):
+        raise FileNotFoundError(
+            f"lighting.hdri_path does not exist: {hdri_path}\n"
+            f"  (cwd={os.getcwd()}) - use an absolute path or a path relative to "
+            f"the project root.")
 
     # Remove existing lights if replacing with fresh rig
     if preset != "preserve_existing":
@@ -321,27 +335,54 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
         w_links.new(tex_coord.outputs["Generated"], mapping.inputs["Vector"])
         w_links.new(mapping.outputs["Vector"], env_tex.inputs["Vector"])
         w_links.new(env_tex.outputs["Color"], bg_node.inputs["Color"])
-        bg_node.inputs["Strength"].default_value = 1.0 * intensity
+        mapping.inputs["Rotation"].default_value[2] = math.radians(
+            lighting_spec.get("hdri_rotation_deg", 0.0))
+        # hdri_strength is deliberately NOT scaled by intensity_multiplier:
+        # intensity_multiplier trims the analytic key/fill/sun rig, and the two
+        # need to be balanced against each other independently.
+        bg_node.inputs["Strength"].default_value = lighting_spec.get("hdri_strength", 1.0)
+        print(f"[MSP Render] Image-based lighting active: "
+              f"{os.path.basename(hdri_path)} @ strength "
+              f"{bg_node.inputs['Strength'].default_value}")
     elif preset == "excavation_pit_sunlit":
         try:
             sky_tex = w_nodes.new(type="ShaderNodeTexSky")
             sky_tex.location = (-200, 0)
-            sky_tex.sky_type = 'NISHITA'
+            # Blender 5.x renamed the Nishita model; 'NISHITA' is no longer a valid
+            # enum item and assigning it raises, which silently dropped the whole sky.
+            _sky_enum = sky_tex.bl_rna.properties['sky_type'].enum_items.keys()
+            for _cand in ('MULTIPLE_SCATTERING', 'NISHITA', 'SINGLE_SCATTERING', 'HOSEK_WILKIE'):
+                if _cand in _sky_enum:
+                    sky_tex.sky_type = _cand
+                    break
             sky_tex.sun_disc = True
             sky_tex.sun_elevation = math.radians(38.0)
             sky_tex.sun_rotation = math.radians(-35.0)
             sky_tex.altitude = 15.0
             sky_tex.air_density = 1.0
-            sky_tex.dust_density = 1.3
+            # 'dust_density' was renamed to 'aerosol_density' in Blender 4.x/5.x.
+            if hasattr(sky_tex, 'aerosol_density'):
+                sky_tex.aerosol_density = 1.3
+            elif hasattr(sky_tex, 'dust_density'):
+                sky_tex.dust_density = 1.3
             sky_tex.ozone_density = 1.0
             w_links.new(sky_tex.outputs["Color"], bg_node.inputs["Color"])
             bg_node.inputs["Strength"].default_value = 0.85 * intensity
-        except Exception:
+        except Exception as _sky_err:
+            # Do not fail silently: a flat blue background is a very different render.
+            print(f"[MSP Render] WARNING: physical sky setup failed ({_sky_err}). "
+                  f"Falling back to FLAT ambient - metals will look washed out.")
             bg_node.inputs["Color"].default_value = (0.75, 0.85, 1.0, 1.0)
             bg_node.inputs["Strength"].default_value = 0.60 * intensity
     else:
         bg_node.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
         bg_node.inputs["Strength"].default_value = 1.0
+
+    # When an HDRI is doing the lighting, the analytic rig is a balance knob, not
+    # the light source. Set lighting.analytic_lights=false for pure IBL.
+    if not lighting_spec.get("analytic_lights", True):
+        print("[MSP Render] Analytic light rig disabled (pure image-based lighting).")
+        return
 
     if preset in ["studio_dark", "studio_white"]:
         key_data = bpy.data.lights.new(name="Key_Softbox", type='AREA')
@@ -389,51 +430,190 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
         bpy.context.scene.collection.objects.link(bounce_obj)
 
 
-def setup_compositor_multipass(output_dir: str):
-    """Sets up compositor nodes to export Beauty, Mask, and Depth passes."""
-    os.makedirs(output_dir, exist_ok=True)
-    scene = bpy.context.scene
+# ==============================================================================
+# PHOTOREALISM PASS  (added in render_worker_photoreal.py)
+# ==============================================================================
+
+def _principled_nodes(mat):
+    if not getattr(mat, "use_nodes", False) or mat.node_tree is None:
+        return []
+    return [n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
+
+
+def inject_bevel_shading(radius: float = 0.0004, samples: int = 4,
+                         skip_keywords=("glass", "airway", "volume", "shadow")):
+    """Round every mathematically-sharp CAD edge at shading time.
+
+    CAD geometry has zero-radius edges, so no edge ever catches a specular
+    highlight - the single strongest 'this is a CAD render' tell. A Bevel node
+    fixes it for the whole scene at zero geometry and zero file-size cost.
+    Cycles only; the node is a no-op under EEVEE/Workbench.
+    """
+    touched = 0
+    for mat in bpy.data.materials:
+        if any(k in mat.name.lower() for k in skip_keywords):
+            continue
+        bsdfs = _principled_nodes(mat)
+        if not bsdfs:
+            continue
+        nt = mat.node_tree
+        if any(n.type == "BEVEL" for n in nt.nodes):
+            continue
+        bevel = nt.nodes.new("ShaderNodeBevel")
+        bevel.samples = samples
+        bevel.inputs["Radius"].default_value = radius
+        bevel.location = (-1000, 400)
+        wired = False
+        for bsdf in bsdfs:
+            nin = bsdf.inputs.get("Normal")
+            if nin is None:
+                continue
+            if nin.is_linked:
+                # Feed the existing bump/normal-map node instead of replacing it,
+                # so procedural surface texture and edge rounding both survive.
+                upstream = nin.links[0].from_node
+                slot = upstream.inputs.get("Normal")
+                if slot is not None and not slot.is_linked:
+                    nt.links.new(bevel.outputs["Normal"], slot)
+                    wired = True
+            else:
+                nt.links.new(bevel.outputs["Normal"], nin)
+                wired = True
+        if wired:
+            touched += 1
+        else:
+            nt.nodes.remove(bevel)
+    print(f"[MSP Render] Bevel shading injected into {touched} materials "
+          f"(radius {radius * 1000:.2f} mm).")
+    return touched
+
+
+def apply_cycles_quality(scene, quality: Dict[str, Any]):
+    """Light-transport settings that matter for brushed/plated metal hardware."""
+    if scene.render.engine != "CYCLES":
+        return
+    c = scene.cycles
+    c.max_bounces = quality.get("max_bounces", 12)
+    c.diffuse_bounces = quality.get("diffuse_bounces", 4)
+    c.glossy_bounces = quality.get("glossy_bounces", 8)
+    c.transmission_bounces = quality.get("transmission_bounces", 8)
+    c.transparent_max_bounces = quality.get("transparent_bounces", 8)
+    c.sample_clamp_indirect = quality.get("clamp_indirect", 10.0)
+    c.blur_glossy = quality.get("blur_glossy", 0.5)
+    for attr, key, default in (("use_light_tree", "light_tree", True),
+                               ("use_adaptive_sampling", "adaptive_sampling", True),
+                               ("caustics_reflective", "caustics_reflective", True),
+                               ("caustics_refractive", "caustics_refractive", False)):
+        try:
+            setattr(c, attr, quality.get(key, default))
+        except Exception:
+            pass
     try:
-        scene.use_nodes = True
+        c.adaptive_threshold = quality.get("adaptive_threshold", 0.01)
     except Exception:
         pass
-    tree = getattr(scene, "node_tree", None) or getattr(scene, "compositing_node_group", None) or getattr(scene, "compositor_node_tree", None)
-    if tree is None:
-        raise AttributeError("Compositor node tree not accessible on Scene")
-    tree.nodes.clear()
+    try:
+        scene.render.use_persistent_data = True
+    except Exception:
+        pass
+    print(f"[MSP Render] Cycles quality: {c.samples} samples, "
+          f"{c.max_bounces} bounces, glossy {c.glossy_bounces}.")
 
-    view_layer = scene.view_layers[0] if scene.view_layers else None
-    if view_layer:
-        view_layer.use_pass_z = True
-        view_layer.use_pass_shadow = True
 
-    render_layers = tree.nodes.new("CompositorNodeRLayers")
-    render_layers.location = (0, 0)
+def apply_color_management(scene, color_spec: Dict[str, Any]):
+    vs = scene.view_settings
+    try:
+        scene.display_settings.display_device = color_spec.get("display_device", "sRGB")
+    except Exception:
+        pass
+    for attr, key, default in (("view_transform", "view_transform", "AgX"),
+                               ("look", "look", "AgX - Medium High Contrast")):
+        want = color_spec.get(key, default)
+        try:
+            setattr(vs, attr, want)
+        except Exception:
+            print(f"[MSP Render] Color management: '{want}' unavailable for {attr}.")
+    try:
+        vs.exposure = color_spec.get("exposure", 0.0)
+        vs.gamma = color_spec.get("gamma", 1.0)
+    except Exception:
+        pass
+    print(f"[MSP Render] Color: {vs.view_transform} / {vs.look} / exposure {vs.exposure}.")
 
-    # CRITICAL: Compositor Output node is required for Blender render pipeline to execute!
-    comp_out = tree.nodes.new("CompositorNodeComposite")
-    comp_out.location = (450, 200)
-    tree.links.new(render_layers.outputs["Image"], comp_out.inputs["Image"])
 
-    # File Output node for passes
-    file_out = tree.nodes.new("CompositorNodeOutputFile")
-    file_out.location = (450, -50)
-    file_out.base_path = output_dir
-    file_out.format.file_format = 'PNG'
-    file_out.format.color_mode = 'RGBA'
+def apply_depth_of_field(scene, camera_spec: Dict[str, Any], target):
+    """Real product photography is never uniformly sharp front to back."""
+    dof_spec = camera_spec.get("depth_of_field") or {}
+    cam_obj = scene.camera
+    if not cam_obj or not dof_spec.get("enabled", False):
+        return
+    cam = cam_obj.data
+    cam.dof.use_dof = True
+    cam.dof.aperture_fstop = dof_spec.get("f_stop", 8.0)
+    cam.dof.aperture_blades = dof_spec.get("blades", 8)
+    focus_name = dof_spec.get("focus_object")
+    focus_obj = bpy.data.objects.get(focus_name) if focus_name else None
+    if focus_obj:
+        cam.dof.focus_object = focus_obj
+    else:
+        cam.dof.focus_distance = dof_spec.get(
+            "focus_distance", (target - cam_obj.location).length)
+    print(f"[MSP Render] DOF on: f/{cam.dof.aperture_fstop} at "
+          f"{cam.dof.focus_distance:.2f} m.")
 
-    file_out.file_slots[0].path = "beauty"
-    tree.links.new(render_layers.outputs["Image"], file_out.inputs[0])
 
-    file_out.file_slots.new("mask")
-    tree.links.new(render_layers.outputs["Alpha"], file_out.inputs["mask"])
+def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
+    """Every photorealism upgrade that costs no geometry and no file size."""
+    photo = manifest.get("photoreal", {})
+    if not photo.get("enabled", True):
+        print("[MSP Render] Photoreal pass disabled by manifest.")
+        return
+    bevel = photo.get("bevel", {})
+    if bevel.get("enabled", True):
+        inject_bevel_shading(radius=bevel.get("radius_m", 0.0004),
+                             samples=bevel.get("samples", 4))
+    apply_cycles_quality(scene, photo.get("quality", {}))
+    apply_color_management(scene, manifest.get("output", {}).get("color", {}))
+    if target is not None:
+        apply_depth_of_field(scene, manifest.get("camera", {}), target)
 
-    norm_depth = tree.nodes.new("CompositorNodeNormalize")
-    norm_depth.location = (240, -150)
-    tree.links.new(render_layers.outputs["Depth"], norm_depth.inputs[0])
-    
-    file_out.file_slots.new("depth")
-    tree.links.new(norm_depth.outputs[0], file_out.inputs["depth"])
+
+def write_matte_pass(output_dir: str):
+    """
+    Writes mask.png (the alpha matte) next to beauty.png.
+
+    Blender 5.x replaced scene.node_tree with scene.compositing_node_group and
+    dropped the Composite node, so the old File Output graph no longer builds.
+    The matte is the only extra pass the compositor actually needs, and it is
+    already sitting in the beauty pass's alpha channel - so it is cheaper and far
+    more predictable to split it out directly than to rebuild a node graph that
+    changes shape every Blender release.
+    """
+    beauty = os.path.join(output_dir, "beauty.png")
+    if not os.path.exists(beauty):
+        return
+    try:
+        img = bpy.data.images.load(beauty, check_existing=False)
+        w, h = img.size
+        px = list(img.pixels)
+        matte = bpy.data.images.new("MSP_Matte", width=w, height=h, alpha=False)
+        alpha = px[3::4]
+        out = []
+        for a in alpha:
+            out.extend((a, a, a, 1.0))
+        matte.pixels = out
+        matte.filepath_raw = os.path.join(output_dir, "mask.png")
+        matte.file_format = 'PNG'
+        # The matte is data, not colour - saving it through the view transform
+        # would gamma-shift the edges and soften the silhouette.
+        matte.colorspace_settings.name = 'Non-Color'
+        matte.save()
+        print(f"[MSP Render] Wrote alpha matte: {matte.filepath_raw}")
+        bpy.data.images.remove(matte)
+        bpy.data.images.remove(img)
+    except Exception as e:
+        print(f"[MSP Render] Note: matte pass skipped ({e}).")
+
 
 def execute_render_job(manifest: Dict[str, Any]):
     """Main execution function inside Blender."""
@@ -481,6 +661,12 @@ def execute_render_job(manifest: Dict[str, Any]):
                 try:
                     obj.select_set(True)
                     bpy.context.view_layer.objects.active = obj
+                    # CAD exports carry custom split normals; shade_smooth()/SUBSURF
+                    # destroys them and makes flat machined faces look melted.
+                    if getattr(obj.data, "has_custom_normals", False):
+                        print(f"[MSP Render] Skipping smoothing on {obj.name} "
+                              f"(has CAD custom normals).")
+                        continue
                     bpy.ops.object.shade_smooth()
                     if not any(m.type == "SUBSURF" for m in obj.modifiers):
                         sub = obj.modifiers.new(name="Hardware_Subdiv", type="SUBSURF")
@@ -503,7 +689,20 @@ def execute_render_job(manifest: Dict[str, Any]):
 
     # Camera
     cam_preset = manifest.get("camera", {}).get("preset", "P1_FRONT_ISO")
-    if cam_preset in ["USE_SCENE_CAMERA", "PRESERVE_EXISTING"] and bpy.context.scene.camera:
+    # Allow a manifest to name a specific camera that already lives in the .blend.
+    # Close-up detail shots are far easier to aim by placing a camera in the file
+    # than by tuning azimuth/elevation/target_offset ratios against scene bounds.
+    wanted_cam = manifest.get("camera", {}).get("scene_camera_name")
+    if wanted_cam:
+        cam_obj = bpy.data.objects.get(wanted_cam)
+        if cam_obj and cam_obj.type == 'CAMERA':
+            bpy.context.scene.camera = cam_obj
+            print(f"[MSP Render] Using named scene camera: {wanted_cam}")
+        else:
+            available = [o.name for o in bpy.data.objects if o.type == 'CAMERA']
+            raise KeyError(f"camera.scene_camera_name '{wanted_cam}' not found. "
+                           f"Cameras in file: {available}")
+    elif cam_preset in ["USE_SCENE_CAMERA", "PRESERVE_EXISTING"] and bpy.context.scene.camera:
         print(f"[MSP Render] Using existing scene camera: {bpy.context.scene.camera.name}")
     else:
         setup_camera(manifest.get("camera", {}), center, radius)
@@ -526,7 +725,13 @@ def execute_render_job(manifest: Dict[str, Any]):
             is_name_match = any(k in name_lower for k in ground_keywords)
             is_mat_match = any(any(k in mn for k in mat_keywords) for mn in mat_names)
             # Detect any large flat horizontal slab (much wider/longer than the pump package)
-            is_flat_ground_dim = (dim.x > 5.0 or dim.y > 5.0) and (dim.z < 1.0)
+            # A skid rail or a long side panel can easily be >5 m and <1 m tall.
+            # Only treat something as ground if it is genuinely slab-like AND
+            # centred near z=0, so structural members are never silently dropped.
+            _z_centre = abs(obj.matrix_world.translation.z)
+            is_flat_ground_dim = (
+                (dim.x > 8.0 and dim.y > 8.0) and dim.z < 0.25 and _z_centre < 0.5
+            )
             is_cube_ground = ("cube" in name_lower and is_flat_ground_dim)
 
             if is_name_match or is_mat_match or is_flat_ground_dim or is_cube_ground:
@@ -600,18 +805,82 @@ def execute_render_job(manifest: Dict[str, Any]):
         try:
             cycles.device = 'GPU'
             prefs = bpy.context.preferences.addons['cycles'].preferences
-            prefs.compute_device_type = 'OPTIX'
+            # Picking a backend is not enough - each device must be switched on,
+            # otherwise Cycles silently falls back to CPU on the Modal worker.
+            # HIP/ONEAPI matter locally: the workstation this demo runs on is an
+            # AMD Radeon 780M, which only exposes HIP. Without it every local
+            # render silently drops to CPU and takes minutes instead of seconds.
+            for _backend in ('OPTIX', 'CUDA', 'HIP', 'ONEAPI'):
+                try:
+                    prefs.compute_device_type = _backend
+                    prefs.get_devices()
+                    _on = [d for d in prefs.devices if d.type == _backend]
+                    if _on:
+                        for d in prefs.devices:
+                            d.use = (d.type == _backend)
+                        print(f"[MSP Render] GPU backend {_backend}: "
+                              f"{[d.name for d in _on]}")
+                        break
+                except Exception:
+                    continue
+            else:
+                print('[MSP Render] WARNING: no GPU device enabled, rendering on CPU.')
         except Exception:
             pass
 
+    # --- photorealism pass (bevel shading, light transport, colour, DOF) ---
     try:
-        setup_compositor_multipass(output_dir)
+        apply_photoreal_pass(scene, manifest, target=center)
     except Exception as e:
-        print(f"[MSP Render] Note: Multi-pass compositor setup bypassed in Blender 5.x ({e}). Rendering direct beauty pass.")
+        print(f"[MSP Render] WARNING: photoreal pass failed: {e}")
 
     print(f"[MSP Render] Starting render for job {manifest.get('job_id')}...")
     bpy.ops.render.render(write_still=True)
+    print(f"[MSP Render] Beauty pass written: {scene.render.filepath}")
+
+    if out_spec.get("passes", {}).get("alpha_mask", True):
+        write_matte_pass(output_dir)
+
     print(f"[MSP Render] Render completed successfully. Output path: {output_dir}")
+
+def resolve_manifest_paths(manifest: Dict[str, Any], manifest_path: str) -> Dict[str, Any]:
+    """
+    Rewrites the relative paths inside a manifest to absolute ones.
+
+    Blender is launched with an unpredictable working directory, so a manifest
+    that says "backgrounds/env_studio-dark.png" would otherwise silently resolve
+    to nothing and the HDRI world would be dropped without an error. Relative
+    paths are resolved against the project root (the manifest's parent's parent
+    when it lives in jobs/, else the manifest's own directory), then the CWD.
+    """
+    manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
+    search_roots = [manifest_dir, os.path.dirname(manifest_dir), os.getcwd()]
+
+    def _resolve(value: Optional[str]) -> Optional[str]:
+        if not value or os.path.isabs(value):
+            return value
+        for root in search_roots:
+            candidate = os.path.normpath(os.path.join(root, value))
+            if os.path.exists(candidate):
+                return candidate
+        return value
+
+    for section, key in (("cad_source", "file_path"),
+                         ("lighting", "hdri_path"),
+                         ("compositing", "background_plate")):
+        block = manifest.get(section)
+        if isinstance(block, dict) and block.get(key):
+            resolved = _resolve(block[key])
+            if resolved != block[key]:
+                print(f"[MSP Render] Resolved {section}.{key} -> {resolved}")
+            block[key] = resolved
+
+    out = manifest.get("output", {})
+    if out.get("output_dir") and not os.path.isabs(out["output_dir"]):
+        out["output_dir"] = os.path.normpath(
+            os.path.join(os.path.dirname(manifest_dir) or os.getcwd(), out["output_dir"]))
+    return manifest
+
 
 # Entrypoint when invoked via CLI inside Blender
 if IN_BLENDER and "--" in sys.argv:
@@ -619,6 +888,7 @@ if IN_BLENDER and "--" in sys.argv:
     if argv and os.path.exists(argv[0]):
         with open(argv[0], 'r', encoding='utf-8') as f:
             manifest_data = json.load(f)
+        manifest_data = resolve_manifest_paths(manifest_data, argv[0])
         execute_render_job(manifest_data)
 
 # ==============================================================================

@@ -1,0 +1,243 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MSP Render Job Manifest",
+  "description": "A single deterministic render job: which CAD file, which camera, which lighting, which background. Everything the pipeline needs is in here - there is no hidden state.",
+  "type": "object",
+  "required": ["job_id", "package_model", "cad_source", "camera", "livery", "lighting", "output"],
+  "additionalProperties": true,
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "description": "Unique job name. Also the default output folder name."
+    },
+    "package_model": {
+      "type": "string",
+      "description": "MSP model identifier, e.g. RL300_SAFE."
+    },
+    "_description": {
+      "type": "string",
+      "description": "Free-text note for humans. Ignored by the pipeline."
+    },
+
+    "cad_source": {
+      "type": "object",
+      "required": ["file_path"],
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path, or a path relative to the project root, to a .blend / .glb / .gltf / .obj file."
+        },
+        "format": { "type": "string", "enum": ["blend", "glb", "gltf", "obj"] },
+        "up_axis": { "type": "string", "enum": ["Z", "Y"] },
+        "unit_scale": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+
+    "camera": {
+      "type": "object",
+      "required": ["preset"],
+      "properties": {
+        "preset": {
+          "type": "string",
+          "description": "A P1-P8 studio preset, CUSTOM to use the angles below, or USE_SCENE_CAMERA / PRESERVE_EXISTING to keep the camera already in the .blend."
+        },
+        "scene_camera_name": {
+          "type": "string",
+          "description": "Name of a camera object inside the .blend to render through. Easier than tuning angles for tight detail shots."
+        },
+        "focal_length_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "elevation_deg": { "type": "number" },
+        "azimuth_deg": { "type": "number" },
+        "distance_multiplier": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Camera distance as a multiple of the model's bounding radius. Larger = machine sits smaller in frame."
+        },
+        "target_offset": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "[x, y, z] aim point. x and y are multiples of the bounding radius; z is a fraction of the model's centre height."
+        },
+        "depth_of_field": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "f_stop": { "type": "number", "exclusiveMinimum": 0 },
+            "blades": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+
+    "geometry": {
+      "type": "object",
+      "properties": {
+        "smooth_hardware": {
+          "type": "boolean",
+          "description": "Smooth-shade and subdivide latches/handles/hinges. Skipped automatically on meshes carrying CAD custom split normals."
+        },
+        "hide_misplaced_isolators": {
+          "type": "boolean",
+          "description": "Hide vibration isolator meshes that sit outside the skid."
+        }
+      }
+    },
+
+    "livery": {
+      "type": "object",
+      "required": ["preset"],
+      "properties": {
+        "preset": {
+          "type": "string",
+          "description": "msp_standard_yellow, united_rentals_blue, custom, or preserve_existing to keep the materials already in the .blend."
+        },
+        "body_color_hex": { "type": "string", "pattern": "^#?[0-9a-fA-F]{6}$" },
+        "body_roughness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "body_clearcoat": { "type": "number", "minimum": 0, "maximum": 1 },
+        "frame_color_hex": { "type": "string", "pattern": "^#?[0-9a-fA-F]{6}$" },
+        "frame_roughness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "decal_pack": { "type": "string" }
+      }
+    },
+
+    "lighting": {
+      "type": "object",
+      "required": ["preset"],
+      "properties": {
+        "preset": {
+          "type": "string",
+          "enum": ["studio_dark", "studio_white", "excavation_pit_sunlit", "preserve_existing"],
+          "description": "Which analytic light rig to build. preserve_existing keeps the lights already in the .blend."
+        },
+        "intensity_multiplier": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Scales the analytic rig only. Does NOT scale hdri_strength - the two are balanced against each other independently."
+        },
+        "analytic_lights": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set false for pure image-based lighting: the HDRI is then the only light source."
+        },
+        "color_temperature_k": { "type": "number" },
+        "shadow_catcher": {
+          "type": "boolean",
+          "description": "Add an invisible ground plane that receives shadows. Leave false when compositing, since composite_worker synthesizes the contact shadow."
+        },
+        "hdri_path": {
+          "type": ["string", "null"],
+          "description": "Image used as the world environment texture. Point this at the same file as compositing.background_plate so the machine is lit by the scene it will be dropped into. Omit or null to use the preset's procedural sky."
+        },
+        "hdri_strength": { "type": "number", "minimum": 0, "default": 1.0 },
+        "hdri_rotation_deg": { "type": "number", "default": 0.0 }
+      }
+    },
+
+    "photoreal": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "bevel": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "radius_m": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Shader-only edge rounding. CAD edges are mathematically sharp and read as fake; a 0.4 mm bevel catches a highlight the way real sheet metal does, at zero geometry cost."
+            },
+            "samples": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "max_bounces": { "type": "integer", "minimum": 0 },
+            "diffuse_bounces": { "type": "integer", "minimum": 0 },
+            "glossy_bounces": { "type": "integer", "minimum": 0 },
+            "transmission_bounces": { "type": "integer", "minimum": 0 },
+            "transparent_bounces": { "type": "integer", "minimum": 0 },
+            "clamp_indirect": { "type": "number", "minimum": 0 },
+            "blur_glossy": { "type": "number", "minimum": 0 },
+            "light_tree": { "type": "boolean" },
+            "adaptive_sampling": { "type": "boolean" },
+            "adaptive_threshold": { "type": "number", "exclusiveMinimum": 0 },
+            "caustics_reflective": { "type": "boolean" },
+            "caustics_refractive": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "output": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "samples": { "type": "integer", "minimum": 1 },
+        "engine": { "type": "string", "enum": ["CYCLES", "BLENDER_EEVEE_NEXT"] },
+        "denoiser": { "type": "string" },
+        "color": {
+          "type": "object",
+          "properties": {
+            "view_transform": { "type": "string" },
+            "look": { "type": "string" },
+            "exposure": { "type": "number" },
+            "gamma": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "passes": {
+          "type": "object",
+          "properties": {
+            "beauty": { "type": "boolean" },
+            "alpha_mask": {
+              "type": "boolean",
+              "description": "Also write mask.png, the alpha matte split out of the beauty pass."
+            },
+            "depth_map": { "type": "boolean" },
+            "surface_normals": { "type": "boolean" },
+            "contact_shadow": { "type": "boolean" }
+          }
+        },
+        "output_dir": { "type": "string" }
+      }
+    },
+
+    "compositing": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "False means the transparent render IS the deliverable; `run` stops after rendering."
+        },
+        "background_plate": { "type": ["string", "null"] },
+        "shadow_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sun_direction": { "type": "string", "enum": ["top_left", "top_right"] },
+        "product_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1.0,
+          "description": "Prefer changing camera.distance_multiplier instead - that resizes the machine without resampling the render."
+        },
+        "product_offset_px": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "product_offset_pct": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[dx, dy] as a fraction of canvas size, so placement tuned on a fast low-res preview lands identically on the full-res final."
+        },
+        "ai_environment_prompt": { "type": "string" },
+        "edge_feather_px": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "job_id": "rl300_02_studio-dark",
+  "package_model": "RL300_SAFE",
+  "_description": "STEP 2 of the demo. Same machine, same camera - but the studio plate is now loaded as the world environment, so the machine is lit by the photograph itself (image-based / HDRI lighting) and then seated on it. Compare against step 1 to see what the environment contributes.",
+  "cad_source": {
+    "file_path": "C:/Projects/CAD/RL300-SAFE/RL300-SAFE-photoreal.blend",
+    "format": "blend",
+    "up_axis": "Z",
+    "unit_scale": 1.0
+  },
+  "camera": {
+    "preset": "CUSTOM",
+    "focal_length_mm": 85.0,
+    "elevation_deg": 11.0,
+    "azimuth_deg": 42.0,
+    "distance_multiplier": 6.6,
+    "target_offset": [
+      0.0,
+      0.0,
+      0.92
+    ],
+    "depth_of_field": {
+      "enabled": true,
+      "f_stop": 11.0,
+      "blades": 8
+    }
+  },
+  "geometry": {
+    "smooth_hardware": false,
+    "hide_misplaced_isolators": true
+  },
+  "livery": {
+    "preset": "preserve_existing"
+  },
+  "lighting": {
+    "preset": "studio_dark",
+    "intensity_multiplier": 0.7,
+    "analytic_lights": true,
+    "shadow_catcher": false,
+    "hdri_path": "backgrounds/env_studio-dark.png",
+    "hdri_strength": 2.6,
+    "hdri_rotation_deg": 20.0
+  },
+  "photoreal": {
+    "enabled": true,
+    "bevel": {
+      "enabled": true,
+      "radius_m": 0.0004,
+      "samples": 4
+    },
+    "quality": {
+      "max_bounces": 8,
+      "diffuse_bounces": 3,
+      "glossy_bounces": 6,
+      "transmission_bounces": 6,
+      "transparent_bounces": 8,
+      "clamp_indirect": 10.0,
+      "blur_glossy": 1.0,
+      "light_tree": true,
+      "adaptive_sampling": true,
+      "adaptive_threshold": 0.02,
+      "caustics_reflective": false,
+      "caustics_refractive": false
+    }
+  },
+  "output": {
+    "width": 1800,
+    "height": 1250,
+    "samples": 96,
+    "engine": "CYCLES",
+    "denoiser": "OPENIMAGEDENOISE",
+    "color": {
+      "view_transform": "AgX",
+      "look": "AgX - Medium High Contrast",
+      "exposure": -0.15,
+      "gamma": 1.0
+    },
+    "passes": {
+      "beauty": true,
+      "alpha_mask": true,
+      "depth_map": true,
+      "surface_normals": false,
+      "contact_shadow": false
+    },
+    "output_dir": "./output/rl300_02_studio-dark"
+  },
+  "compositing": {
+    "enabled": true,
+    "background_plate": "backgrounds/env_studio-dark.png",
+    "shadow_opacity": 0.9,
+    "sun_direction": "top_left",
+    "product_scale": 1.0,
+    "product_offset_px": [
+      0,
+      0
+    ],
+    "product_offset_pct": [
+      0.0,
+      -0.02
+    ]
+  }
+}
