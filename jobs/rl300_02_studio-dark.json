@@ -36,7 +36,7 @@
     "preset": "studio_dark",
     "intensity_multiplier": 0.7,
     "analytic_lights": true,
-    "shadow_catcher": false,
+    "shadow_catcher": true,
     "hdri_path": "backgrounds/env_studio-dark.png",
     "hdri_strength": 2.6,
     "hdri_rotation_deg": 20.0

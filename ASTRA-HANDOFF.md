@@ -108,6 +108,65 @@ All in one commit, separate from yours.
 
 I verified the masks independently with PIL rather than trusting the report.
 
+## Ground shadow — Mark's finding, fixed (2026-09-11)
+
+Mark reported that every render through Modal and Blender leaves the machine
+floating. Confirmed, measured, and fixed at his go-ahead.
+
+**It was configuration, not lighting.** All four job manifests carried
+`"shadow_catcher": false`, and `render_worker` doesn't merely skip the catcher
+when that is off — it deletes any `GroundShadowCatcher` in the scene, commented
+"to ensure clean transparent alpha". Nothing in the scene could receive a
+contact shadow. Measured on the v3 reference beauty pass: partial alpha was
+**0.61%** (3,407 px) with its bounding box within 2 px of the opaque bounding
+box — pure edge antialiasing, no shadow footprint at all. The dark gradient
+under the skid is painted into `env_studio-dark.png`; it was never the machine's
+shadow.
+
+Geometry was already correct for it: scene Z bounds are **0.0000 .. 2.1074**
+with zero objects below Z=0, so the plane the code adds at `location=(0,0,0)`
+lands flush under the skid. No repositioning needed.
+
+**Flipping the flag alone was not enough.** The catcher is built at
+`size = radius * 14` with `data.materials.clear()`, which leaves Blender's
+default ~0.8 grey diffuse — a bounce card larger than the machine, aimed
+straight up at it. A shadow catcher still participates in indirect light, so
+the product got flooded:
+
+| RL300 studio-dark, machine pixels only | mean R | mean G | mean B | shadow footprint |
+|---|---|---|---|---|
+| before (`shadow_catcher: false`) | 179.61 | 149.90 | 93.44 | 0.33% |
+| flag flipped, bounce live | 194.73 | 168.87 | 124.30 | 22.79% |
+| flag flipped + bounce muted | 179.03 | 149.31 | 92.35 | 26.47% |
+
+Blue lifted +31 in the middle row — the yellow went pale and the black chassis
+frame lifted to grey, across 87% of product pixels (mean luminance +19, p95
++52).
+
+**Fix:** `mute_catcher_bounce()` clears `visible_diffuse` / `visible_glossy` /
+`visible_transmission` / `visible_volume_scatter` on the catcher (with the
+pre-3.0 `cycles_visibility` fallback). The shadow is a camera-ray effect on the
+catcher itself and survives; the plane leaves every indirect bounce path.
+Applied at both catcher construction sites. Result is the bottom row: product
+colour restored to within **0.76 mean absolute channel levels** of the original
+(99.9th percentile 6), with a stronger shadow than the bouncing version.
+
+Only `jobs/rl300_02_studio-dark.json` was flipped. `rl300_01_no-background`,
+`rl300_03_excavation-pit` and `jgun_01_no-background` are still `false` and
+untouched — worth a look, since the no-background jobs may want it off by
+design while `excavation_pit` almost certainly does not.
+
+A/B artifacts: `output/shadow-ab/{before,after,after-nobounce}/` (git-ignored).
+
+**This invalidates the v3 parity baseline.** The prepared payload manifest at
+`parity-20260910-v3/payload/manifest.json` has `shadow_catcher: false` baked in,
+and a shadow catcher writes its shadow into the **alpha channel** on transparent
+film — partial alpha goes 0.33% → 26.47%, which moves coverage, IoU and
+`mask.png`. Re-baselining means regenerating the payload through
+`prepare_scene.py` from the updated job, which changes `prepared_sha256` and the
+whole evidence chain. That is your T01/T02 call, so I left it. Mark has not
+accepted any reference.
+
 ## What I did not touch
 
 Deliberately left for you:
@@ -132,8 +191,17 @@ Deliberately left for you:
    verifier adjudicate, which keeps render jobs completing but requires the
    verifier to check it.
 
+3. **Do the other three jobs want a ground shadow?** Only studio-dark was
+   flipped. The two `no-background` jobs may want it off deliberately (a
+   transparent cut-out with a shadow in its alpha is not always wanted);
+   `rl300_03_excavation-pit` almost certainly wants it on.
+
 ## Next atomic step
 
-Mark compares `parity-20260910-v3/reference/composite.png` against the intended
-existing RL300 studio-dark image and accepts (or rejects) the reference hash.
-Nothing downstream of that — profile acceptance, G0, T04 — can move first.
+**Not** the v3 reference — it is superseded. It was rendered with
+`shadow_catcher: false` and freezing it would make the floating machine the
+target that cloud parity has to reproduce.
+
+Regenerate the prepared payload from the updated studio-dark job, re-run the
+verifier, and put *that* composite in front of Mark. Then he accepts or rejects
+a reference that is actually grounded.
