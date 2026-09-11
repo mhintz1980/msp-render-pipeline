@@ -215,3 +215,76 @@ profile remains `proposed_pending_owner`. `g0_passed`, `owner_accepted` and
 `cloud_authorized` are all still false. A zero-failure machine proof is not
 acceptance; Mark rules on the composite above against the intended studio-dark
 image before the profile is frozen and T04 advances.
+
+## Powder coat rebuild - September 11 (v5)
+
+`MSP_YELLOW_PAINT` arrives from the CAD file as Bevel -> Principled -> Output:
+constant roughness 0.42, `Coat Weight` 0.0, and nothing on the Normal input
+except the bevel. One lobe with a uniform roughness returns an identical,
+analytically smooth highlight on every panel, which is what read as computer
+generated. `photoreal.powder_coat` in the studio-dark job now drives
+`apply_powder_coat()`, which edits the named CAD materials in place rather than
+replacing them - the aluminium, stainless, rubber and plastic materials keep
+doing their own work.
+
+Three changes, in the order they matter at this framing:
+
+| Change | From | To |
+|---|---|---|
+| Coat layer | `Coat Weight` 0.0 | 0.85 @ coat roughness 0.05 |
+| Roughness | constant 0.42 | noise-driven 0.34-0.52, ~2 cm cells |
+| Normal | bevel only | bevel -> peel 1.54 mm + flow 7.69 mm bump |
+| Bevel radius | CAD value (job's 0.4 mm never applied) | 1.0 mm |
+
+### What orange peel can and cannot do here
+
+Orange peel is a 1-2 mm feature. Framed full width at 900x625 the machine gets
+roughly 4 mm per pixel, and at production 1800x1250 roughly 2 mm - so a
+physically correct peel is at or below one pixel and contributes nothing to the
+proof image. This was measured, not assumed: at 16.7 mm and strength 1.0 the
+same shader produces obvious stucco, and at 1.5 mm it disappears. Rendering it
+undenoised at 256 samples does not bring it back either, so the denoiser is not
+the cause. A photograph at this framing would not show peel for the same reason.
+
+What carries the finish at this distance is the coat layer and the noise-driven
+roughness: roughness varies over many pixels, so it survives both resolution and
+denoising, and it mottles the highlight instead of leaving a smooth gradient.
+The peel stays in the shader at honest physical values for close crops and
+higher-resolution output.
+
+A further gain would come from lighting, not material. Peel reads in real
+product photography because there is a structured softbox reflection for it to
+distort; a dark studio with broad soft sources gives it nothing crisp to
+disturb. That is a separate change with its own review and is not made here.
+
+### v5 run results
+
+Identical runtime, source and prepared hashes to v4 - only the manifest and
+`render_worker.py` changed, which is what invalidates the reference through the
+verifier's hashed inputs.
+
+| Mode | Verdict | IoU | Coverage delta | Linear RGB MAE | p99 |
+|---|---|---|---|---|---|
+| `repeat` | pass | 1.0 | 0.0 | 0.0 | 0.0 |
+| `camera_shift` | fails as intended | 0.827 | 0.0177 | 0.128 | 0.766 |
+| `material_change` | fails as intended | 0.943 | 0.0314 | 0.297 | 0.760 |
+| `missing_texture` | blocks before render | - | - | - | - |
+
+`repeat` is pixel-identical across the full RGBA frame (max channel delta 0).
+Both negative controls now satisfy the stricter check added with the review
+fixes: each fails on its own expected code with no degenerate codes present.
+
+### v5 candidate reference hashes, pending Mark's ruling
+
+Under `parity-20260911-powdercoat-v5/reference/`:
+
+| Artifact | SHA-256 |
+|---|---|
+| `beauty.png` | `758b74fdea933cb6978470e45cfe2966807b5e0780565213827e28ac90813a05` |
+| `mask.png` | `ae7b9c4028b2d9cabc5c101821f71439b7479167487b1aa0b2e267e7d3a278f9` |
+| `composite.png` | `cb993ebdb66b64ec820c6afffcbd2cf2076f164a0591d9c298bbfc78af76a708` |
+
+v4 is superseded as a reference candidate but preserved as evidence. Status is
+`awaiting_reference_acceptance` with no failures; the profile stays
+`proposed_pending_owner`; `g0_passed`, `owner_accepted` and `cloud_authorized`
+remain false.
