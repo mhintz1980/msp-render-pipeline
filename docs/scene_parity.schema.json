@@ -22,6 +22,19 @@
     "prepared_sha256": {"$ref": "#/$defs/hash"},
     "runs": {"type": "object"},
     "comparisons": {"type": "object"},
+    "mask_checks": {
+      "type": "object",
+      "required": ["reference", "repeat", "camera_shift", "material_change"],
+      "additionalProperties": {
+        "type": "object",
+        "required": ["passed", "failures"],
+        "properties": {
+          "passed": {"type": "boolean"},
+          "failures": {"type": "array", "items": {"type": "string"}},
+          "max_alpha_byte_difference": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
     "artifacts": {
       "type": "array", "items": {
         "type": "object", "additionalProperties": false,
