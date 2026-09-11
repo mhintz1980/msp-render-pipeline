@@ -1,0 +1,2 @@
+# Additional test dependency; the renderer already requires NumPy and Pillow.
+jsonschema==4.26.0

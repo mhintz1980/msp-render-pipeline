@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:studiomark:prepared-scene:1",
+  "title": "Local PreparedScene v1 audit (not a cloud payload or isolation proof)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "scope", "isolation_verified", "source", "prepared", "runtime", "dependencies", "sanitized_metadata", "blockers", "remaining_external_paths", "scene_summary", "elapsed_seconds"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["prepared", "blocked"]},
+    "scope": {"const": "local_preparation"},
+    "isolation_verified": {"const": false},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/nullableHash"}}
+    },
+    "prepared": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]},
+    "runtime": {
+      "oneOf": [{"type": "null"}, {
+        "type": "object", "additionalProperties": false,
+        "required": ["blender_version", "build_hash", "autoexec_enabled"],
+        "properties": {"blender_version": {"type": "string"}, "build_hash": {"type": "string"}, "autoexec_enabled": {"type": "boolean"}}
+      }]
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "name", "original_path", "resolved_path", "storage", "sha256", "size_bytes"],
+        "properties": {
+          "kind": {"enum": ["image", "font", "library"]}, "name": {"type": "string"},
+          "original_path": {"type": "string"}, "resolved_path": {"type": ["string", "null"]},
+          "storage": {"enum": ["external", "packed", "builtin", "generated"]},
+          "sha256": {"$ref": "#/$defs/nullableHash"}, "size_bytes": {"type": ["integer", "null"], "minimum": 0}
+        }
+      }
+    },
+    "sanitized_metadata": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "datablock", "original_path", "id_name"],
+        "properties": {
+          "kind": {"const": "library_weak_reference"}, "datablock": {"type": "string"},
+          "original_path": {"type": "string"}, "id_name": {"type": "string"}
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["code", "resource", "detail"],
+        "properties": {
+          "code": {"enum": ["MISSING_DEPENDENCY", "INVALID_DEPENDENCY", "UNSUPPORTED_DEPENDENCY", "HASH_MISMATCH", "RUNTIME_MISMATCH", "BLENDER_FAILED", "BLENDER_UNAVAILABLE", "PREPARATION_TIMEOUT"]},
+          "resource": {"type": "string"}, "detail": {"type": "string"}
+        }
+      }
+    },
+    "remaining_external_paths": {"type": "array", "items": {"type": "string"}},
+    "scene_summary": {
+      "oneOf": [{"type": "null"}, {
+        "type": "object", "additionalProperties": false,
+        "required": ["active_scene", "scene_names", "object_count", "mesh_count", "material_count", "node_tree_count"],
+        "properties": {
+          "active_scene": {"type": "string"}, "scene_names": {"type": "array", "items": {"type": "string"}},
+          "object_count": {"type": "integer", "minimum": 0}, "mesh_count": {"type": "integer", "minimum": 0},
+          "material_count": {"type": "integer", "minimum": 0}, "node_tree_count": {"type": "integer", "minimum": 0}
+        }
+      }]
+    },
+    "elapsed_seconds": {"type": "number", "minimum": 0}
+  },
+  "allOf": [{
+    "if": {"properties": {"status": {"const": "prepared"}}},
+    "then": {
+      "properties": {
+        "prepared": {"$ref": "#/$defs/artifact"}, "blockers": {"maxItems": 0},
+        "remaining_external_paths": {"maxItems": 0}, "runtime": {"type": "object", "properties": {"autoexec_enabled": {"const": false}}},
+        "scene_summary": {"type": "object"}, "source": {"properties": {"sha256": {"$ref": "#/$defs/hash"}}}
+      }
+    },
+    "else": {"properties": {"prepared": {"type": "null"}, "blockers": {"minItems": 1}}}
+  }],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableHash": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/hash"}]},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/hash"}, "size_bytes": {"type": "integer", "minimum": 1}}
+    }
+  }
+}
