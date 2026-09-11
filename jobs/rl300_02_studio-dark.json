@@ -3,7 +3,7 @@
   "package_model": "RL300_SAFE",
   "_description": "STEP 2 of the demo. Same machine, same camera - but the studio plate is now loaded as the world environment, so the machine is lit by the photograph itself (image-based / HDRI lighting) and then seated on it. Compare against step 1 to see what the environment contributes.",
   "cad_source": {
-    "file_path": "C:/Projects/CAD/RL300-SAFE/RL300-SAFE-photoreal.blend",
+    "file_path": "cad/RL300-SAFE-photoreal.blend",
     "format": "blend",
     "up_axis": "Z",
     "unit_scale": 1.0

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:studiomark:scene-parity:1",
+  "title": "Local T03 proof, awaiting owner reference acceptance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "owner_accepted", "g0_passed", "cloud_authorized", "failures"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["blocked", "awaiting_reference_acceptance"]},
+    "owner_accepted": {"const": false},
+    "g0_passed": {"const": false},
+    "cloud_authorized": {"const": false},
+    "failures": {"type": "array", "items": {"type": "string"}},
+    "inputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/hash"}},
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "build", "archive_sha256"],
+      "properties": {"version": {"const": "5.1.1"}, "build": {"const": "b70da489d7f4"}, "archive_sha256": {"$ref": "#/$defs/hash"}}
+    },
+    "source_sha256": {"$ref": "#/$defs/hash"},
+    "prepared_sha256": {"$ref": "#/$defs/hash"},
+    "runs": {"type": "object"},
+    "comparisons": {"type": "object"},
+    "artifacts": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "sha256", "size_bytes"],
+        "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/hash"}, "size_bytes": {"type": "integer", "minimum": 1}}
+      }
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"status": {"const": "awaiting_reference_acceptance"}}},
+    "then": {
+      "required": ["inputs", "runtime", "source_sha256", "prepared_sha256", "runs", "comparisons", "artifacts"],
+      "properties": {"failures": {"maxItems": 0}, "artifacts": {"minItems": 1},
+        "runs": {"required": ["reference", "repeat", "camera_shift", "material_change", "missing_texture"]},
+        "comparisons": {"required": ["source_to_prepared", "repeat", "camera_shift", "material_change"]}}
+    },
+    "else": {"properties": {"failures": {"minItems": 1}}}
+  }],
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}
