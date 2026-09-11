@@ -61,6 +61,23 @@
       "adaptive_threshold": 0.02,
       "caustics_reflective": false,
       "caustics_refractive": false
+    },
+    "powder_coat": {
+      "enabled": true,
+      "materials": [
+        "MSP_YELLOW_PAINT"
+      ],
+      "coat_weight": 0.85,
+      "coat_roughness": 0.05,
+      "roughness_min": 0.34,
+      "roughness_max": 0.52,
+      "roughness_noise_scale": 45.0,
+      "peel_scale": 650.0,
+      "peel_strength": 0.3,
+      "peel_distance": 0.0012,
+      "bevel_radius_m": 0.001,
+      "flow_scale": 130.0,
+      "flow_weight": 0.6
     }
   },
   "output": {

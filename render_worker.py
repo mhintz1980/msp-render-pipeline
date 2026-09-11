@@ -591,6 +591,146 @@ def inject_bevel_shading(radius: float = 0.0004, samples: int = 4,
     return touched
 
 
+def apply_powder_coat(spec: Dict[str, Any]):
+    """Turn a flat painted CAD material into something that reads as powder coat.
+
+    A single Principled lobe cannot look like powder coat no matter how the
+    roughness is tuned - the finish is a broad body colour under a tighter clear
+    sheen, and its surface carries orange peel: fine irregular dimpling left by
+    the powder flowing out during cure. The CAD materials arrive as one lobe with
+    a constant roughness, so every panel returns an identical, mathematically
+    smooth highlight. That uniform specular gradient is the thing that reads as
+    computer generated.
+
+    Three additions, in the order they matter visually:
+
+    1. A coat layer, for the dual-lobe sheen.
+    2. Noise-driven *roughness*, which mottles the highlight. This carries the
+       look at render resolution: roughness variation changes the shape of the
+       highlight over many pixels, so the denoiser preserves it. High-frequency
+       normal detail is exactly what OIDN is built to remove.
+    3. A bump for the peel itself, underneath, for close inspection.
+
+    Texture coordinates come from world position, not object coordinates: this
+    assembly is hundreds of separate CAD parts, and per-object coordinates would
+    restart the pattern at every panel seam and rescale it per part.
+    """
+    if not spec.get("enabled", False):
+        return 0
+
+    names = spec.get("materials", [])
+    coat_weight = spec.get("coat_weight", 0.7)
+    coat_rough = spec.get("coat_roughness", 0.10)
+    rough_min = spec.get("roughness_min", 0.38)
+    rough_max = spec.get("roughness_max", 0.48)
+    rough_scale = spec.get("roughness_noise_scale", 18.0)
+    peel_scale = spec.get("peel_scale", 550.0)
+    peel_strength = spec.get("peel_strength", 0.15)
+    peel_distance = spec.get("peel_distance", 0.0006)
+    flow_scale = spec.get("flow_scale", 130.0)
+    flow_weight = spec.get("flow_weight", 0.6)
+    bevel_radius = spec.get("bevel_radius_m")
+
+    touched = 0
+    for name in names:
+        mat = bpy.data.materials.get(name)
+        if mat is None or not mat.use_nodes:
+            print(f"[MSP Render] Powder coat: material {name} not found; skipped.")
+            continue
+        bsdfs = _principled_nodes(mat)
+        if not bsdfs:
+            print(f"[MSP Render] Powder coat: {name} has no Principled BSDF; skipped.")
+            continue
+        nt = mat.node_tree
+        nodes, links = nt.nodes, nt.links
+
+        geo = nodes.new("ShaderNodeNewGeometry")
+        geo.location = (-1400, -400)
+
+        rough_noise = nodes.new("ShaderNodeTexNoise")
+        rough_noise.location = (-1150, -250)
+        rough_noise.inputs["Scale"].default_value = rough_scale
+        rough_noise.inputs["Detail"].default_value = 2.0
+        rough_noise.inputs["Roughness"].default_value = 0.5
+
+        rough_range = nodes.new("ShaderNodeMapRange")
+        rough_range.location = (-900, -250)
+        # Noise rarely reaches 0 or 1; remapping from the band it actually
+        # occupies keeps the full roughness spread instead of a washed middle.
+        rough_range.inputs["From Min"].default_value = 0.30
+        rough_range.inputs["From Max"].default_value = 0.70
+        rough_range.inputs["To Min"].default_value = rough_min
+        rough_range.inputs["To Max"].default_value = rough_max
+
+        # Two scales, because one cannot cover both viewing distances. True orange
+        # peel is around 1-2 mm; framed full-width at this resolution the machine
+        # gets roughly 2 mm per pixel, so that layer is sub-pixel and contributes
+        # nothing here - it only appears in close crops and higher-res output.
+        # The coarser layer is the coating's flow-out undulation, several
+        # millimetres across, which is what actually reads as a coated surface at
+        # full-machine framing. Both are physical; they just resolve at different
+        # distances.
+        peel_noise = nodes.new("ShaderNodeTexNoise")
+        peel_noise.location = (-1150, -600)
+        peel_noise.inputs["Scale"].default_value = peel_scale
+        peel_noise.inputs["Detail"].default_value = 3.0
+        peel_noise.inputs["Roughness"].default_value = 0.6
+
+        flow_noise = nodes.new("ShaderNodeTexNoise")
+        flow_noise.location = (-1150, -800)
+        flow_noise.inputs["Scale"].default_value = flow_scale
+        flow_noise.inputs["Detail"].default_value = 2.0
+        flow_noise.inputs["Roughness"].default_value = 0.5
+
+        peel_mix = nodes.new("ShaderNodeMix")
+        peel_mix.data_type = "FLOAT"
+        peel_mix.location = (-1020, -700)
+        peel_mix.inputs["Factor"].default_value = flow_weight
+
+        bump = nodes.new("ShaderNodeBump")
+        bump.location = (-900, -600)
+        bump.inputs["Strength"].default_value = peel_strength
+        bump.inputs["Distance"].default_value = peel_distance
+
+        links.new(geo.outputs["Position"], rough_noise.inputs["Vector"])
+        links.new(geo.outputs["Position"], peel_noise.inputs["Vector"])
+        links.new(geo.outputs["Position"], flow_noise.inputs["Vector"])
+        links.new(rough_noise.outputs["Fac"], rough_range.inputs["Value"])
+        _mix_a, _mix_b = [s for s in peel_mix.inputs if s.name == "A"][0],                          [s for s in peel_mix.inputs if s.name == "B"][0]
+        links.new(peel_noise.outputs["Fac"], _mix_a)
+        links.new(flow_noise.outputs["Fac"], _mix_b)
+        links.new([s for s in peel_mix.outputs if s.name == "Result"][0], bump.inputs["Height"])
+
+        for bsdf in bsdfs:
+            rough_in = bsdf.inputs.get("Roughness")
+            if rough_in is not None and not rough_in.is_linked:
+                links.new(rough_range.outputs["Result"], rough_in)
+            for key, value in (("Coat Weight", coat_weight), ("Coat Roughness", coat_rough)):
+                slot = bsdf.inputs.get(key)
+                if slot is not None and not slot.is_linked:
+                    slot.default_value = value
+            nin = bsdf.inputs.get("Normal")
+            if nin is None:
+                continue
+            if nin.is_linked:
+                # Keep whatever already rounds the edges (the CAD bevel node) and
+                # put the peel on top of it, rather than replacing it.
+                upstream = nin.links[0].from_socket
+                links.new(upstream, bump.inputs["Normal"])
+            links.new(bump.outputs["Normal"], nin)
+
+        if bevel_radius is not None:
+            for node in nodes:
+                if node.type == "BEVEL":
+                    node.inputs["Radius"].default_value = bevel_radius
+        touched += 1
+        print(f"[MSP Render] Powder coat applied to {name}: coat {coat_weight:.2f} "
+              f"@ {coat_rough:.2f}, roughness {rough_min:.2f}-{rough_max:.2f}, "
+              f"peel {1000.0 / peel_scale:.2f} mm + flow "
+              f"{1000.0 / flow_scale:.2f} mm @ {flow_weight:.2f}.")
+    return touched
+
+
 def apply_cycles_quality(scene, quality: Dict[str, Any]):
     """Light-transport settings that matter for brushed/plated metal hardware."""
     if scene.render.engine != "CYCLES":
@@ -674,6 +814,7 @@ def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
     # Surface response first, then bevel - inject_bevel_shading rewires the
     # Normal input and must see the final node graph.
     polish_cad_materials(manifest.get("material_polish", {}))
+    apply_powder_coat(photo.get("powder_coat", {}))
 
     bevel = photo.get("bevel", {})
     if bevel.get("enabled", True):
@@ -983,7 +1124,17 @@ def execute_render_job(manifest: Dict[str, Any]):
     if scene.render.engine == "CYCLES":
         cycles = scene.cycles
         cycles.samples = out_spec.get("samples", 128)
-        cycles.use_denoising = True
+        # The manifest's denoiser choice was being ignored here, which made
+        # "NONE" unrepresentable - and OIDN is exactly what erases fine surface
+        # detail like powder-coat orange peel, so it has to be switchable.
+        denoiser = str(out_spec.get("denoiser", "OPENIMAGEDENOISE")).upper()
+        cycles.use_denoising = denoiser not in ("NONE", "OFF", "FALSE")
+        if cycles.use_denoising and denoiser in ("OPENIMAGEDENOISE", "OPTIX"):
+            try:
+                cycles.denoiser = denoiser
+            except (TypeError, AttributeError):
+                pass
+        print(f"[MSP Render] Denoiser: {denoiser} (enabled={cycles.use_denoising}).")
         try:
             cycles.device = 'GPU'
             prefs = bpy.context.preferences.addons['cycles'].preferences
