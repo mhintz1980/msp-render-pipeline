@@ -134,7 +134,7 @@ is absent (`MSP_BLENDER_BIN` overrides the search).
 
 **v3 measurements.** All four rendered modes: `mask.png` vs `beauty.png` alpha
 max byte difference **0**, 49 distinct mask values, coverage matching alpha
-exactly. `repeat` is bit-exact against the reference (IoU 1.0, RGB MAE 0.0, P99
+exactly. `repeat` is pixel-exact against the reference (IoU 1.0, RGB MAE 0.0, P99
 0.0). Both image controls fail as designed — `camera_shift` on
 `SILHOUETTE_MISMATCH` + `RGB_MISMATCH` (IoU 0.735, coverage delta 0.018) and
 `material_change` on `RGB_MISMATCH` alone (IoU 1.0, coverage delta 0.0).
@@ -175,8 +175,12 @@ structural differences, and every mode reopened with
 | `material_change` | fails as intended | 0.943 | 0.0314 | 0.299 | 0.761 |
 | `missing_texture` | blocks before render | - | - | - | - |
 
-`repeat` is bit-identical, so the grounded scene is as deterministic as the
-ungrounded one. `missing_texture` blocks with `MISSING_DEPENDENCY:
+`repeat` is pixel-identical to the reference across the full RGBA frame -
+max channel delta 0, zero differing pixels, including the penumbra, anti-aliased
+edges and fully transparent region that `image_metrics` does not measure. The
+saved PNG *files* differ in bytes because Blender stamps Date and RenderTime
+metadata into each render; the image data does not. The grounded scene is
+therefore as deterministic as the ungrounded one. `missing_texture` blocks with `MISSING_DEPENDENCY:
 world_environment`. All four rendered modes pass the mask/alpha binding with
 `max_alpha_byte_difference: 0`.
 
@@ -196,6 +200,15 @@ Under `parity-20260911-grounded-v4/reference/`:
 | `beauty.png` | `592df350fea5510e12fe1e696bd63efa047c5fe677797ffbad645b8c77c3276d` |
 | `mask.png` | `a20686604c4be507a4b4aacfe480b5d5c2f0d7484cd470ee63b1a1c814667d6f` |
 | `composite.png` | `9a173cf12d7798dd4ddb0e073755069c0feff770de15f51d46a8d46b99b2d795` |
+
+### Known calibration risk
+
+The mask is product-plus-shadow, so the IoU >=0.995 and coverage-delta <=0.005
+gates now sit on a soft boundary: the shadow's edge is illumination- and
+denoise-dependent, and coverage is decided at mask byte 8. This is the most
+likely threshold to break first on different hardware during T04 cloud parity.
+Recorded as a calibration risk to watch, not a reason to change any threshold
+now - thresholds stay as proposed until Mark rules.
 
 The report status is `awaiting_reference_acceptance` with no failures, and the
 profile remains `proposed_pending_owner`. `g0_passed`, `owner_accepted` and

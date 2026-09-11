@@ -336,6 +336,26 @@ def run_proof(args):
     return summarize(output, runs, inputs, preparation, manifest)
 
 
+# A negative control has to fail for its own reason. A camera shift that rendered
+# an empty frame would "fail" on EMPTY_PRODUCT and silently count as a working
+# control, so require the expected code and reject the degenerate ones.
+EXPECTED_NEGATIVE = {"camera_shift": "SILHOUETTE_MISMATCH", "material_change": "RGB_MISMATCH"}
+DEGENERATE = ("INVALID_MASK", "MASK_ALPHA_MISMATCH", "INVALID_BEAUTY",
+              "DIMENSIONS_MISMATCH", "EMPTY_PRODUCT", "NO_OPAQUE_PIXELS", "EMPTY_INTERIOR")
+
+
+def negative_control_failures(mode, metrics):
+    """Check a negative control failed, and failed for the reason it exists to prove."""
+    if metrics["passed"]:
+        return [mode + ": NEGATIVE_IMAGE_PASSED"]
+    found = metrics.get("failures", [])
+    problems = [mode + ": DEGENERATE_CONTROL: " + code for code in DEGENERATE if code in found]
+    expected = EXPECTED_NEGATIVE.get(mode)
+    if expected and expected not in found:
+        problems.append(mode + ": MISSING_EXPECTED_FAILURE: " + expected)
+    return problems
+
+
 def summarize(output, runs, inputs, preparation, manifest):
     failures, comparisons = [], {}
     if any(mode not in runs for mode in ("reference", "repeat", "camera_shift", "material_change", "missing_texture")):
@@ -361,8 +381,8 @@ def summarize(output, runs, inputs, preparation, manifest):
             comparisons[mode] = {"image": metrics, "structural_differences": diffs}
             if mode == "repeat" and (not metrics["passed"] or diffs):
                 failures.append("GOOD_REPEAT_FAILED")
-            if mode != "repeat" and metrics["passed"]:
-                failures.append(mode + ": NEGATIVE_IMAGE_PASSED")
+            if mode != "repeat":
+                failures.extend(negative_control_failures(mode, metrics))
         missing = runs.get("missing_texture", {})
         if missing.get("exit_code") == 0 or not any("MISSING_DEPENDENCY" in x for x in missing.get("report", {}).get("blockers", [])):
             failures.append("MISSING_TEXTURE_CONTROL_FAILED")
