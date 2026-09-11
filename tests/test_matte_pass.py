@@ -122,9 +122,14 @@ class TestVerifierRejectsBlankMask(unittest.TestCase):
         self.verify_scene = _load_verify_scene()
 
     def _consistency(self, mask, alpha):
-        """Mirror of the verifier's mask/alpha check on decoded arrays."""
-        return mask.shape == alpha.shape and \
-            np.abs(mask.astype(int) - alpha.astype(int)).max() <= 1
+        """Exercise production decoding and validation, not a copy of its logic."""
+        with tempfile.TemporaryDirectory() as tmp:
+            beauty = np.full((*alpha.shape, 4), 128, dtype=np.uint8)
+            beauty[..., 3] = alpha
+            beauty_path, mask_path = Path(tmp) / "beauty.png", Path(tmp) / "mask.png"
+            Image.fromarray(beauty).save(beauty_path)
+            Image.fromarray(mask).save(mask_path)
+            return self.verify_scene.mask_metrics(beauty_path, mask_path)["passed"]
 
     def test_blank_mask_is_rejected(self):
         _, alpha = _beauty_with_gradient_alpha()
@@ -148,6 +153,18 @@ class TestVerifierRejectsBlankMask(unittest.TestCase):
     def test_shape_mismatch_is_rejected(self):
         _, alpha = _beauty_with_gradient_alpha()
         self.assertFalse(self._consistency(alpha[:, :-1].copy(), alpha))
+
+    def test_missing_and_corrupt_masks_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            beauty, _ = _beauty_with_gradient_alpha()
+            beauty_path, mask_path = Path(tmp) / "beauty.png", Path(tmp) / "mask.png"
+            Image.fromarray(beauty).save(beauty_path)
+            for data in (None, b"invalid PNG"):
+                if data is not None:
+                    mask_path.write_bytes(data)
+                result = self.verify_scene.mask_metrics(beauty_path, mask_path)
+                self.assertEqual(result["failures"], ["INVALID_MASK"])
+                self.assertFalse(result["passed"])
 
 
 if __name__ == "__main__":

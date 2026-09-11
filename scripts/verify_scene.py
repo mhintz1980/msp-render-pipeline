@@ -34,8 +34,39 @@ def save(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
 
 
-def image_metrics(reference, candidate, heatmap=None):
-    """Compare decoded 8-bit sRGB PNGs; product interior excludes alpha edges."""
+def read_coverage_mask(path, alpha):
+    """Decode the required saved coverage matte and check its beauty-alpha binding."""
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            mask = np.asarray(im.convert("L"))
+    except (OSError, ValueError):
+        return None, {"passed": False, "failures": ["INVALID_MASK"]}
+    if mask.shape != alpha.shape:
+        return None, {"passed": False, "failures": ["MASK_ALPHA_MISMATCH"]}
+    delta = int(np.abs(mask.astype(int) - alpha.astype(int)).max())
+    return mask, {"passed": delta <= 1,
+                  "failures": [] if delta <= 1 else ["MASK_ALPHA_MISMATCH"],
+                  "max_alpha_byte_difference": delta}
+
+
+def mask_metrics(beauty, mask):
+    """Validate the saved mask through the same check used by image comparison."""
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(beauty) as im:
+            alpha = np.asarray(im.convert("RGBA"))[..., 3]
+    except (OSError, ValueError):
+        return {"passed": False, "failures": ["INVALID_BEAUTY"]}
+    return read_coverage_mask(mask, alpha)[1]
+
+
+def image_metrics(reference, candidate, heatmap=None, *, reference_mask, candidate_mask):
+    """Use saved mattes for product-plus-shadow coverage; beauty for opaque RGB."""
     import numpy as np
     from PIL import Image
 
@@ -45,7 +76,12 @@ def image_metrics(reference, candidate, heatmap=None):
         b = np.asarray(im.convert("RGBA"))
     if a.shape != b.shape:
         return {"passed": False, "failures": ["DIMENSIONS_MISMATCH"]}
-    ma, mb = a[..., 3] > 8, b[..., 3] > 8
+    mask_a, check_a = read_coverage_mask(reference_mask, a[..., 3])
+    mask_b, check_b = read_coverage_mask(candidate_mask, b[..., 3])
+    mask_failures = sorted(set(check_a["failures"] + check_b["failures"]))
+    if mask_failures:
+        return {"passed": False, "failures": mask_failures}
+    ma, mb = mask_a > 8, mask_b > 8
     ca, cb = float(ma.mean()), float(mb.mean())
     opaque = (a[..., 3] == 255) & (b[..., 3] == 255)
     interior = np.zeros_like(opaque)
@@ -317,7 +353,8 @@ def summarize(output, runs, inputs, preparation, manifest):
             if mode not in runs or runs[mode]["exit_code"] or runs[mode]["report"]["status"] != "rendered":
                 failures.append(mode + ": RENDER_FAILED")
                 continue
-            metrics = image_metrics(output / "reference/beauty.png", dest / "beauty.png", dest / "heatmap.png")
+            metrics = image_metrics(output / "reference/beauty.png", dest / "beauty.png", dest / "heatmap.png",
+                                    reference_mask=output / "reference/mask.png", candidate_mask=dest / "mask.png")
             a = json.loads((output / "reference/render-structure.json").read_text())
             b = json.loads((dest / "render-structure.json").read_text())
             diffs = structure_differences(a, b)
@@ -353,19 +390,20 @@ def summarize(output, runs, inputs, preparation, manifest):
             composite = np.asarray(im.convert("RGB"))
         if not opaque.any() or not np.array_equal(pixels[..., :3][opaque], composite[opaque]):
             failures.append("SAVED_COMPOSITE_FIDELITY_FAILED")
-        for mode in ("reference", "repeat", "camera_shift", "material_change"):
-            try:
-                with Image.open(output / mode / "beauty.png") as im:
-                    alpha = np.asarray(im.convert("RGBA"))[..., 3]
-                with Image.open(output / mode / "mask.png") as im:
-                    mask = np.asarray(im.convert("L"))
-                if mask.shape != alpha.shape or np.abs(mask.astype(int) - alpha.astype(int)).max() > 1:
-                    failures.append(mode + ": MASK_ALPHA_MISMATCH")
-            except (OSError, ValueError):
-                failures.append(mode + ": INVALID_MASK")
+    mask_checks = {}
+    for mode in ("reference", "repeat", "camera_shift", "material_change"):
+        check = mask_metrics(output / mode / "beauty.png", output / mode / "mask.png")
+        mask_checks[mode] = check
+        failures.extend(mode + ": " + failure for failure in check["failures"])
     profile = {"schema_version": 1, "status": "proposed_pending_owner", "limits": LIMITS,
                "encoding": "8-bit PNG, sRGB transfer inverse on AgX display-referred RGB; not scene-linear radiance",
+               "mask_semantics": {"artifact": "mask.png", "coverage": "product_plus_shadow",
+                   "visible_byte_threshold_exclusive": 8, "beauty_alpha_tolerance_bytes": 1,
+                   "rgb_region": "eroded jointly opaque beauty alpha"},
+               "shadow_catcher": manifest["lighting"].get("shadow_catcher", False),
                "fixed_settings": manifest["output"], "seed": 0, "frame": 1, "device": "CPU",
+               "reference_mask_sha256": digest(output / "reference/mask.png") if (output / "reference/mask.png").exists() else None,
+               "reference_composite_sha256": digest(output / "reference/composite.png") if (output / "reference/composite.png").exists() else None,
                "reference_sha256": digest(output / "reference/beauty.png") if (output / "reference/beauty.png").exists() else None}
     save(output / "scene-parity-profile.json", profile)
     inventory = [{"path": p.relative_to(output).as_posix(), "sha256": digest(p), "size_bytes": p.stat().st_size}
@@ -374,7 +412,7 @@ def summarize(output, runs, inputs, preparation, manifest):
               "owner_accepted": False, "g0_passed": False, "cloud_authorized": False,
               "inputs": inputs, "runtime": {"version": VERSION, "build": BUILD, "archive_sha256": ARCHIVE_SHA256},
               "source_sha256": preparation["source"]["sha256"], "prepared_sha256": preparation["prepared"]["sha256"],
-              "failures": failures, "runs": runs, "comparisons": comparisons, "artifacts": inventory}
+              "failures": failures, "runs": runs, "comparisons": comparisons, "mask_checks": mask_checks, "artifacts": inventory}
     from jsonschema import Draft202012Validator
     schema = json.loads((ROOT / "docs/scene_parity.schema.json").read_text())
     Draft202012Validator.check_schema(schema)

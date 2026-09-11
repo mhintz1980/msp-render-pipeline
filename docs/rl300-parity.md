@@ -41,10 +41,16 @@ the original source snapshot to the isolated prepared reopen; compare the repeat
 render snapshot to the reference. Names and counts are exact; float tolerance is
 absolute 1e-5 in Blender scene units. This is not full mesh or CAD certification.
 
-Two separate good renders must pass the initial plan thresholds: mask IoU ≥0.995,
+Two separate good renders must pass the initial plan thresholds: saved-mask IoU ≥0.995,
 coverage delta ≤0.005, eroded opaque-interior RGB MAE ≤0.01 and P99 ≤0.05. Images
 must decode with exact dimensions, ≥1% visible coverage and nonempty opaque pixels
-and eroded interior. Masks must agree with saved beauty alpha to within one byte.
+and eroded interior. The required `mask.png` is authoritative for visible occupancy,
+IoU and coverage delta. Masks must agree with saved beauty alpha to within one byte;
+missing, corrupt, incorrectly sized or inconsistent masks block the proof. With
+`shadow_catcher: true`, mask coverage includes the product and its ground shadow.
+It is not a product-only segmentation. RGB gates use the eroded jointly opaque
+beauty-alpha region. `mask_checks` records the per-mode alpha agreement, and the
+profile binds reference beauty, mask and composite hashes plus mask semantics.
 Numerical RGB uses the inverse sRGB transfer on display-referred AgX PNG channels,
 not a claim of recovering scene-linear radiance. Heatmaps amplify errors 4×.
 
@@ -67,8 +73,12 @@ any render starts.
 From the worktree in PowerShell, choose a **new** evidence directory:
 
 ```powershell
+./.venv/Scripts/python.exe scripts/prepare_scene.py `
+  --source cad/RL300-SAFE-photoreal.blend `
+  --output-dir output/verification/rl300-prepared-v1/grounded-preparation-new `
+  --blender-bin 'C:/Program Files/Blender Foundation/Blender 5.1/blender.exe'
 ./.venv/Scripts/python.exe scripts/verify_scene.py `
-  --preparation-report output/verification/rl300-prepared-v1/reviewed-preparation-20260910/preparation-report.json `
+  --preparation-report output/verification/rl300-prepared-v1/grounded-preparation-new/preparation-report.json `
   --linux-runtime /home/markimus/.cache/studiomark/blender-5.1.1-20260910/blender-5.1.1-linux-x64 `
   --output-dir output/verification/rl300-prepared-v1/reference-candidate-new `
   --timeout 600
@@ -91,7 +101,7 @@ exists in this verifier.
 |---|---|---|
 | `parity-20260910-v1` | `awaiting_reference_acceptance`, no failures | **Stale pass — do not cite.** It was produced before the mask/alpha consistency check existed. Its `mask.png` files are blank, identical to v2's; only the gate differed. |
 | `parity-20260910-v2` | `blocked` — `MASK_ALPHA_MISMATCH` ×4 | Correct verdict on a real defect. Same `prepared_sha256`/`source_sha256` and pixel-identical artifacts to v1. |
-| `parity-20260910-v3` | `awaiting_reference_acceptance`, no failures | Current candidate, produced after the matte fix below. |
+| `parity-20260910-v3` | `awaiting_reference_acceptance`, no failures | **Superseded.** Matte fix verified, but shadow catcher was off. Not eligible for reference acceptance after the ground-shadow fix. |
 
 The v1/v2 divergence was not a run-to-run instability: the two runs are
 pixel-identical. Nothing regressed between them; the check that catches the
@@ -107,14 +117,13 @@ colorspace set before the pixel write produces a faithful matte. The read side
 was never at fault — `img.pixels[3::4]` on a loaded beauty PNG returns correct
 alpha.
 
-This survived a full five-mode run because no numerical gate reads `mask.png`.
-`image_metrics()` derives silhouette, coverage and interior masks from
+This originally survived a full five-mode run because no numerical gate read `mask.png`.
+The original `image_metrics()` derived silhouette, coverage and interior masks from
 `beauty.png`'s alpha channel, so the IoU, coverage-delta and RGB thresholds
 were all measured on data the blank mask never touched — including the "≥1%
-visible coverage" floor. **`mask.png` currently carries no gate weight of its
-own.** Either promote it to the authoritative silhouette input or drop it from
-the payload; a third unverified copy of the silhouette is how this happened.
-That is an owner/architect decision, not a verifier change.
+visible coverage" floor. **September 11 ruling:** retain the required artifact and
+promote it to the authoritative coverage input. The production consistency check
+also runs on every rendered mode; tests invoke it rather than mirror its formula.
 
 **The fix.** Colorspace is set before the pixel write; the writer re-reads the
 saved matte and raises `MATTE_DEGENERATE` or `MATTE_ALPHA_MISMATCH` rather than
@@ -132,6 +141,64 @@ exactly. `repeat` is bit-exact against the reference (IoU 1.0, RGB MAE 0.0, P99
 `missing_texture` blocks before render with `MISSING_DEPENDENCY:
 world_environment`. `source_to_prepared` reports zero structural differences.
 
-Mark's review artifact is
-`parity-20260910-v3/reference/composite.png`. Owner acceptance,
+The v3 artifacts remain historical evidence only. Owner acceptance,
 `g0_passed` and `cloud_authorized` all remain false.
+
+## Grounded reference rebuild — September 11
+
+The committed studio-dark job enables the ground shadow. Both catcher construction
+paths mute diffuse, glossy, transmission and volume-scatter visibility so the
+ground does not brighten the product through indirect bounce. Keep failed matte
+writes fatal; an incomplete required output cannot be a successful render job.
+
+Fresh preparation: `grounded-preparation-20260911/preparation-report.json`.
+Fresh proof: `parity-20260911-grounded-v4/`. Both paths are under
+`output/verification/rl300-prepared-v1/`; earlier evidence is preserved.
+
+Preparation handles the scene, not the job manifest. The verifier builds a new
+payload from the current studio-dark job and hashes its manifest/environment and
+scripts. A shadow-setting change invalidates the reference through these inputs;
+it need not alter the source or prepared geometry. No threshold, source geometry,
+camera, material, or other job's shadow setting is changed by this continuation.
+
+### v4 run results
+
+Blender 5.1.1 build `b70da489d7f4`, archive `6f9fff89...a7c7f2a`. Source
+`e6d6adc1...`, prepared `cbda813b...`. `source_to_prepared` reports zero
+structural differences, and every mode reopened with
+`source_paths_inaccessible: true`.
+
+| Mode | Verdict | IoU | Coverage delta | Linear RGB MAE | p99 |
+|---|---|---|---|---|---|
+| `repeat` | pass | 1.0 | 0.0 | 0.0 | 0.0 |
+| `camera_shift` | fails as intended | 0.827 | 0.0177 | 0.127 | 0.775 |
+| `material_change` | fails as intended | 0.943 | 0.0314 | 0.299 | 0.761 |
+| `missing_texture` | blocks before render | - | - | - | - |
+
+`repeat` is bit-identical, so the grounded scene is as deterministic as the
+ungrounded one. `missing_texture` blocks with `MISSING_DEPENDENCY:
+world_environment`. All four rendered modes pass the mask/alpha binding with
+`max_alpha_byte_difference: 0`.
+
+One behavioural change from v3 is worth recording: `material_change` now trips
+`SILHOUETTE_MISMATCH` alongside `RGB_MISMATCH`, where under v3 it failed on
+`RGB_MISMATCH` alone at IoU 1.0. This is the shadow catcher working as
+specified - the mask is product-plus-shadow coverage, so a material change that
+alters the cast shadow legitimately alters coverage. It is a stricter negative
+control, not a regression.
+
+### Candidate reference hashes, pending Mark's ruling
+
+Under `parity-20260911-grounded-v4/reference/`:
+
+| Artifact | SHA-256 |
+|---|---|
+| `beauty.png` | `592df350fea5510e12fe1e696bd63efa047c5fe677797ffbad645b8c77c3276d` |
+| `mask.png` | `a20686604c4be507a4b4aacfe480b5d5c2f0d7484cd470ee63b1a1c814667d6f` |
+| `composite.png` | `9a173cf12d7798dd4ddb0e073755069c0feff770de15f51d46a8d46b99b2d795` |
+
+The report status is `awaiting_reference_acceptance` with no failures, and the
+profile remains `proposed_pending_owner`. `g0_passed`, `owner_accepted` and
+`cloud_authorized` are all still false. A zero-failure machine proof is not
+acceptance; Mark rules on the composite above against the intended studio-dark
+image before the profile is frozen and T04 advances.

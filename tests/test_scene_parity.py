@@ -35,11 +35,15 @@ class TestImageMetrics(unittest.TestCase):
         image[top : top + width, left : left + width] = color
         return image
 
-    def compare(self, reference, candidate):
+    def compare(self, reference, candidate, reference_mask=None, candidate_mask=None):
         with tempfile.TemporaryDirectory(prefix="scene-parity-images-") as folder:
             return verify_scene.image_metrics(
                 self.write_image(folder, "reference.png", reference),
                 self.write_image(folder, "candidate.png", candidate),
+                reference_mask=self.write_image(folder, "reference-mask.png",
+                    reference[..., 3] if reference_mask is None else reference_mask),
+                candidate_mask=self.write_image(folder, "candidate-mask.png",
+                    candidate[..., 3] if candidate_mask is None else candidate_mask),
             )
 
     def test_identical_meaningful_opaque_object_passes(self):
@@ -121,6 +125,36 @@ class TestImageMetrics(unittest.TestCase):
 
         self.assertFalse(metrics["passed"])
         self.assertIn("DIMENSIONS_MISMATCH", metrics["failures"])
+
+    def test_saved_mask_controls_coverage_within_alpha_tolerance(self):
+        image = self.opaque_square()
+        image[0:4, :, 3] = 8
+        reference_mask = image[..., 3].copy()
+        candidate_mask = reference_mask.copy()
+        candidate_mask[0:4, :] = 9
+
+        metrics = self.compare(image, image, reference_mask, candidate_mask)
+
+        self.assertIn("SILHOUETTE_MISMATCH", metrics["failures"])
+        self.assertEqual(metrics["coverage_delta"], 0.125)
+        self.assertEqual(metrics["linear_rgb_mae"], 0.0)
+
+    def test_blank_saved_mask_cannot_pass_identical_beauties(self):
+        image = self.opaque_square()
+        metrics = self.compare(image, image, candidate_mask=np.zeros((32, 32), dtype=np.uint8))
+        self.assertFalse(metrics["passed"])
+        self.assertIn("MASK_ALPHA_MISMATCH", metrics["failures"])
+
+    def test_soft_shadow_changes_coverage_but_not_product_rgb(self):
+        reference = self.opaque_square()
+        candidate = reference.copy()
+        candidate[25:29, 4:28] = (0, 0, 0, 96)
+
+        metrics = self.compare(reference, candidate)
+
+        self.assertIn("SILHOUETTE_MISMATCH", metrics["failures"])
+        self.assertEqual(metrics["linear_rgb_mae"], 0.0)
+        self.assertEqual(metrics["interior_pixels"], 14 * 14)
 
 
 class TestStructureDifferences(unittest.TestCase):
