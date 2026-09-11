@@ -654,6 +654,76 @@ def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
         apply_depth_of_field(scene, manifest.get("camera", {}), target)
 
 
+MATTE_TOLERANCE = 1.5 / 255.0
+
+
+def _read_alpha(img):
+    """Alpha channel of a loaded Blender image as a flat float sequence."""
+    n = img.size[0] * img.size[1] * img.channels
+    try:
+        import numpy as np
+    except ImportError:
+        return list(img.pixels)[3::4]
+    buf = np.empty(n, dtype=np.float32)
+    img.pixels.foreach_get(buf)
+    return buf[3::4]
+
+
+def _write_grey(matte, alpha):
+    """Fill a generated image with `alpha` replicated across RGB, A = 1."""
+    try:
+        import numpy as np
+    except ImportError:
+        out = []
+        for a in alpha:
+            out.extend((a, a, a, 1.0))
+        matte.pixels = out
+        return
+    flat = np.empty(len(alpha) * 4, dtype=np.float32)
+    flat[0::4] = alpha
+    flat[1::4] = alpha
+    flat[2::4] = alpha
+    flat[3::4] = 1.0
+    matte.pixels.foreach_set(flat)
+
+
+def _assert_matte_matches(mask_path, alpha):
+    """Re-read the saved matte and prove it carries the beauty alpha.
+
+    A silently blank mask.png survived a full verification cycle once; the
+    matte is cheap to check and expensive to get wrong, so the write is
+    proven here rather than trusted.
+    """
+    check = bpy.data.images.load(mask_path, check_existing=False)
+    try:
+        # Read it back the way it was written, or the sRGB->linear transform on
+        # load would shift every sample and fail a matte that is actually fine.
+        check.colorspace_settings.name = 'Non-Color'
+        n = check.size[0] * check.size[1] * check.channels
+        if check.size[0] * check.size[1] != len(alpha):
+            raise RuntimeError(
+                f"MATTE_DIMENSION_MISMATCH: {mask_path} is {tuple(check.size)}")
+        try:
+            import numpy as np
+        except ImportError:
+            written = list(check.pixels)[0::4]
+            worst = max(abs(float(w) - float(a)) for w, a in zip(written, alpha))
+            span = max(written) - min(written)
+        else:
+            buf = np.empty(n, dtype=np.float32)
+            check.pixels.foreach_get(buf)
+            written = buf[0::4]
+            worst = float(np.abs(written - np.asarray(alpha, dtype=np.float32)).max())
+            span = float(written.max() - written.min())
+    finally:
+        bpy.data.images.remove(check)
+    if span == 0.0:
+        raise RuntimeError(f"MATTE_DEGENERATE: {mask_path} is a single flat value")
+    if worst > MATTE_TOLERANCE:
+        raise RuntimeError(
+            f"MATTE_ALPHA_MISMATCH: {mask_path} differs from beauty alpha by {worst:.4f}")
+
+
 def write_matte_pass(output_dir: str):
     """
     Writes mask.png (the alpha matte) next to beauty.png.
@@ -668,27 +738,31 @@ def write_matte_pass(output_dir: str):
     beauty = os.path.join(output_dir, "beauty.png")
     if not os.path.exists(beauty):
         return
+    mask_path = os.path.join(output_dir, "mask.png")
+    img = bpy.data.images.load(beauty, check_existing=False)
     try:
-        img = bpy.data.images.load(beauty, check_existing=False)
         w, h = img.size
-        px = list(img.pixels)
+        alpha = _read_alpha(img)
         matte = bpy.data.images.new("MSP_Matte", width=w, height=h, alpha=False)
-        alpha = px[3::4]
-        out = []
-        for a in alpha:
-            out.extend((a, a, a, 1.0))
-        matte.pixels = out
-        matte.filepath_raw = os.path.join(output_dir, "mask.png")
-        matte.file_format = 'PNG'
-        # The matte is data, not colour - saving it through the view transform
-        # would gamma-shift the edges and soften the silhouette.
-        matte.colorspace_settings.name = 'Non-Color'
-        matte.save()
-        print(f"[MSP Render] Wrote alpha matte: {matte.filepath_raw}")
-        bpy.data.images.remove(matte)
+        try:
+            # The matte is data, not colour - saving it through the view transform
+            # would gamma-shift the edges and soften the silhouette.
+            #
+            # This MUST be set before the pixel write. Assigning
+            # colorspace_settings on a generated image frees and regenerates its
+            # buffer from generated_color (opaque black), so setting it
+            # afterwards silently discards the matte and writes a blank mask.
+            matte.colorspace_settings.name = 'Non-Color'
+            _write_grey(matte, alpha)
+            matte.filepath_raw = mask_path
+            matte.file_format = 'PNG'
+            matte.save()
+        finally:
+            bpy.data.images.remove(matte)
+        _assert_matte_matches(mask_path, alpha)
+        print(f"[MSP Render] Wrote alpha matte: {mask_path}")
+    finally:
         bpy.data.images.remove(img)
-    except Exception as e:
-        print(f"[MSP Render] Note: matte pass skipped ({e}).")
 
 
 def execute_render_job(manifest: Dict[str, Any]):
