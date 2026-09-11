@@ -14,7 +14,6 @@ must still reject one that is blank.
 
 import importlib.util
 import os
-import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -27,23 +26,10 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCENE = ROOT / "scripts" / "verify_scene.py"
 
-BLENDER_CANDIDATES = (
-    os.environ.get("MSP_BLENDER_BIN"),
-    r"C:/Program Files/Blender Foundation/Blender 5.1/blender.exe",
-    "blender",
-)
-
-
-def _find_blender():
-    for candidate in BLENDER_CANDIDATES:
-        if not candidate:
-            continue
-        if os.path.isfile(candidate):
-            return candidate
-        resolved = shutil.which(candidate)
-        if resolved:
-            return resolved
-    return None
+# The pinned build only. An unpinned `blender` from PATH could be any version and
+# would prove nothing about the build this reference is frozen against.
+BLENDER = Path(os.environ.get("MSP_BLENDER_BIN")
+               or r"C:/Program Files/Blender Foundation/Blender 5.1/blender.exe")
 
 
 def _load_verify_scene():
@@ -73,9 +59,10 @@ class TestMattePassWriter(unittest.TestCase):
     """Drives the real render_worker.write_matte_pass inside Blender."""
 
     def test_mask_matches_beauty_alpha(self):
-        blender = _find_blender()
-        if blender is None:
-            self.skipTest("Blender not found; set MSP_BLENDER_BIN to run this test")
+        # Never skip: a silent skip here would let a broken matte writer ship.
+        self.assertTrue(BLENDER.is_file(),
+                        f"Pinned Blender executable unavailable: {BLENDER}")
+        blender = str(BLENDER)
 
         with tempfile.TemporaryDirectory() as tmp:
             beauty, alpha = _beauty_with_gradient_alpha()
