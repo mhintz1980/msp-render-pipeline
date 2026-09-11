@@ -56,6 +56,14 @@ product pixels. General compositor hardening remains T05.
 
 ## Run and acceptance
 
+Prerequisites: the worktree `.venv` with `requirements-test.txt` installed
+(`jsonschema` is required or the preparation tests fail to import). A bare
+`python` on PATH is not sufficient.
+
+Run from **PowerShell**, not Git Bash — MSYS rewrites the leading `/home/...` of
+`--linux-runtime` into a Windows path and the runtime hash check fails before
+any render starts.
+
 From the worktree in PowerShell, choose a **new** evidence directory:
 
 ```powershell
@@ -76,3 +84,54 @@ approved plan's proposals. Mark must compare the candidate composite with the
 intended existing RL300 studio-dark image and accept the reference hash before the
 profile is accepted and T04/cloud parity work advances. No automatic approval path
 exists in this verifier.
+
+## Run record
+
+| Evidence directory | Status | Read as |
+|---|---|---|
+| `parity-20260910-v1` | `awaiting_reference_acceptance`, no failures | **Stale pass — do not cite.** It was produced before the mask/alpha consistency check existed. Its `mask.png` files are blank, identical to v2's; only the gate differed. |
+| `parity-20260910-v2` | `blocked` — `MASK_ALPHA_MISMATCH` ×4 | Correct verdict on a real defect. Same `prepared_sha256`/`source_sha256` and pixel-identical artifacts to v1. |
+| `parity-20260910-v3` | `awaiting_reference_acceptance`, no failures | Current candidate, produced after the matte fix below. |
+
+The v1/v2 divergence was not a run-to-run instability: the two runs are
+pixel-identical. Nothing regressed between them; the check that catches the
+blank mask was added after v1 was measured.
+
+**The defect.** Every `mask.png` was solid black while the beauty alpha was
+correct. `render_worker.write_matte_pass` assigned
+`matte.colorspace_settings.name` *after* writing `matte.pixels`. Assigning a
+colorspace to a generated image frees and regenerates its buffer from
+`generated_color` (opaque black), so the matte was discarded and a blank mask
+saved. Reproduced in isolation on Blender 5.1.1: identical code with the
+colorspace set before the pixel write produces a faithful matte. The read side
+was never at fault — `img.pixels[3::4]` on a loaded beauty PNG returns correct
+alpha.
+
+This survived a full five-mode run because no numerical gate reads `mask.png`.
+`image_metrics()` derives silhouette, coverage and interior masks from
+`beauty.png`'s alpha channel, so the IoU, coverage-delta and RGB thresholds
+were all measured on data the blank mask never touched — including the "≥1%
+visible coverage" floor. **`mask.png` currently carries no gate weight of its
+own.** Either promote it to the authoritative silhouette input or drop it from
+the payload; a third unverified copy of the silhouette is how this happened.
+That is an owner/architect decision, not a verifier change.
+
+**The fix.** Colorspace is set before the pixel write; the writer re-reads the
+saved matte and raises `MATTE_DEGENERATE` or `MATTE_ALPHA_MISMATCH` rather than
+shipping a bad one, and the former blanket `except Exception` that swallowed
+matte failures is gone. `tests/test_matte_pass.py` drives the real writer inside
+Blender and asserts byte agreement with the beauty alpha; it skips when Blender
+is absent (`MSP_BLENDER_BIN` overrides the search).
+
+**v3 measurements.** All four rendered modes: `mask.png` vs `beauty.png` alpha
+max byte difference **0**, 49 distinct mask values, coverage matching alpha
+exactly. `repeat` is bit-exact against the reference (IoU 1.0, RGB MAE 0.0, P99
+0.0). Both image controls fail as designed — `camera_shift` on
+`SILHOUETTE_MISMATCH` + `RGB_MISMATCH` (IoU 0.735, coverage delta 0.018) and
+`material_change` on `RGB_MISMATCH` alone (IoU 1.0, coverage delta 0.0).
+`missing_texture` blocks before render with `MISSING_DEPENDENCY:
+world_environment`. `source_to_prepared` reports zero structural differences.
+
+Mark's review artifact is
+`parity-20260910-v3/reference/composite.png`. Owner acceptance,
+`g0_passed` and `cloud_authorized` all remain false.
