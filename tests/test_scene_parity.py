@@ -1,6 +1,7 @@
 """Contract tests for scene image and structure parity comparisons."""
 
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -192,6 +193,67 @@ class TestStructureDifferences(unittest.TestCase):
         )
 
         self.assertEqual(differences, ["root.objects: length differs"])
+
+
+class TestVerifierJob(unittest.TestCase):
+    def test_default_job_is_preserved(self):
+        parser = verify_scene.build_parser()
+        args = parser.parse_args([
+            "--preparation-report", "preparation-report.json",
+            "--linux-runtime", "/opt/blender",
+            "--output-dir", "evidence",
+        ])
+
+        self.assertEqual(args.job, str(verify_scene.DEFAULT_JOB))
+        manifest, _, _ = verify_scene.load_verification_job(args.job)
+        self.assertEqual(manifest["job_id"], "rl300_02_studio-dark")
+
+    def test_selected_job_reaches_payload(self):
+        source = ROOT / "cad" / "RL300-SAFE-photoreal.blend"
+        selected_job = ROOT / "jobs" / "rl300_04_studio-white.json"
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-job-") as folder:
+            output = Path(folder) / "evidence"
+            output.mkdir()
+            prepared = Path(folder) / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
+
+            manifest, _ = verify_scene.stage_job_payload(output, prepared, source, selected_job)
+
+            payload_manifest = json.loads((output / "payload" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["job_id"], "rl300_04_studio-white")
+            self.assertEqual(payload_manifest["job_id"], "rl300_04_studio-white")
+            self.assertEqual(payload_manifest["lighting"]["hdri_path"], "/input/environment.png")
+            self.assertEqual(payload_manifest["compositing"]["background_plate"], "/input/environment.png")
+            self.assertEqual(
+                (output / "payload" / "environment.png").read_bytes(),
+                (ROOT / "backgrounds" / "env_studio-white.png").read_bytes(),
+            )
+
+    def test_missing_job_path_is_reported_clearly(self):
+        with self.assertRaisesRegex(ValueError, "Job manifest does not exist"):
+            verify_scene.load_verification_job("jobs/does-not-exist.json")
+
+    def test_job_source_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-source-") as folder:
+            output = Path(folder) / "evidence"
+            output.mkdir()
+            prepared = Path(folder) / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
+
+            with self.assertRaisesRegex(ValueError, "does not match the preparation source"):
+                verify_scene.stage_job_payload(
+                    output, prepared, ROOT / "cad" / "different.blend", verify_scene.DEFAULT_JOB
+                )
+
+    def test_separate_environment_and_plate_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-assets-") as folder:
+            manifest = json.loads((ROOT / verify_scene.DEFAULT_JOB).read_text(encoding="utf-8"))
+            manifest["compositing"]["background_plate"] = "backgrounds/env_studio-white.png"
+            job = Path(folder) / "mismatched.json"
+            job.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "to reference the same file"):
+                verify_scene.load_verification_job(job)
 
 
 if __name__ == "__main__":
