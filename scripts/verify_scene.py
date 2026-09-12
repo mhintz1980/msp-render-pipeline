@@ -17,6 +17,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+DEFAULT_JOB = Path("jobs/rl300_02_studio-dark.json")
 VERSION = "5.1.1"
 BUILD = "b70da489d7f4"
 ARCHIVE_SHA256 = "6f9fff89fef154ef7974d1a1c4b916ab4bc1f5618bcb48d5befee1bd0a7c7f2a"
@@ -32,6 +33,84 @@ def digest(path):
 
 def save(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+
+
+def resolve_job_path(job):
+    """Resolve a verifier job path against the repository root and require a file."""
+    path = Path(job)
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    if not path.is_file():
+        raise ValueError(f"Job manifest does not exist: {path}")
+    return path
+
+
+def load_verification_job(job):
+    """Load a job and validate the image assumptions used by the local proof."""
+    path = resolve_job_path(job)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Unable to read job manifest {path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Job manifest must contain a JSON object: {path}")
+
+    def asset(section, key):
+        block = manifest.get(section)
+        value = block.get(key) if isinstance(block, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Job manifest requires a non-empty {section}.{key}: {path}")
+        asset_path = Path(value)
+        if not asset_path.is_absolute():
+            asset_path = ROOT / asset_path
+        asset_path = asset_path.resolve()
+        if not asset_path.is_file():
+            raise ValueError(f"Job manifest {section}.{key} does not exist: {asset_path}")
+        return asset_path
+
+    cad_source = asset("cad_source", "file_path")
+    environment = asset("lighting", "hdri_path")
+    background_plate = asset("compositing", "background_plate")
+    if environment != background_plate:
+        raise ValueError(
+            "Verifier requires lighting.hdri_path and compositing.background_plate "
+            f"to reference the same file; got {environment} and {background_plate}"
+        )
+    compositing = manifest.get("compositing", {})
+    if compositing.get("enabled") is not True:
+        raise ValueError("Verifier requires compositing.enabled to be true")
+    if compositing.get("product_scale", 1.0) != 1.0:
+        raise ValueError("Verifier requires compositing.product_scale to be 1.0")
+    if compositing.get("product_offset_px", [0, 0]) != [0, 0]:
+        raise ValueError("Verifier requires compositing.product_offset_px to be [0, 0]")
+    return manifest, cad_source, environment
+
+
+def stage_job_payload(output, prepared, source, job):
+    """Copy a selected job and its declared image into the isolated probe payload."""
+    manifest, cad_source, environment = load_verification_job(job)
+    source = Path(source).resolve()
+    if cad_source != source:
+        raise ValueError(
+            "Job manifest cad_source.file_path does not match the preparation source: "
+            f"{cad_source} != {source}"
+        )
+    payload = Path(output) / "payload"
+    payload.mkdir()
+    for src, name in [(prepared, "prepared.blend"), (environment, "environment.png"),
+                      (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
+                      (Path(__file__), "verify_scene.py"), (ROOT / "render_worker.py", "render_worker.py")]:
+        shutil.copyfile(src, payload / name)
+    manifest["cad_source"]["file_path"] = "/input/prepared.blend"
+    manifest["lighting"]["hdri_path"] = "/input/environment.png"
+    manifest["compositing"]["background_plate"] = "/input/environment.png"
+    manifest["output"].update(width=900, height=625, samples=48, output_dir="/output")
+    manifest["output"]["passes"] = {"beauty": True, "alpha_mask": True}
+    save(payload / "manifest.json", manifest)
+    inputs = {p.name: digest(p) for p in sorted(payload.iterdir())}
+    save(payload / "inputs.json", inputs)
+    return manifest, inputs
 
 
 def read_coverage_mask(path, alpha):
@@ -289,26 +368,12 @@ def run_proof(args):
             raise ValueError("HASH_MISMATCH: " + str(path))
     from msp_render_cli.cli import find_blender
     local_blender = find_blender() if sys.platform == "win32" else str(Path(args.linux_runtime) / "blender")
+    manifest, inputs = stage_job_payload(output, prepared, source, args.job)
     command = [local_blender, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "20",
                "--python", str(Path(__file__).resolve()), "--", "--_source-snapshot", str(source), str(output / "source-structure.json")]
     with (output / "source-snapshot.log").open("w", encoding="utf-8") as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=True)
-    manifest = json.loads((ROOT / "jobs/rl300_02_studio-dark.json").read_text())
-    environment = ROOT / manifest["lighting"]["hdri_path"]
     payload = output / "payload"
-    payload.mkdir()
-    for src, name in [(prepared, "prepared.blend"), (environment, "environment.png"),
-                      (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
-                      (Path(__file__), "verify_scene.py"), (ROOT / "render_worker.py", "render_worker.py")]:
-        shutil.copyfile(src, payload / name)
-    manifest["cad_source"]["file_path"] = "/input/prepared.blend"
-    manifest["lighting"]["hdri_path"] = "/input/environment.png"
-    manifest["compositing"]["background_plate"] = "/input/environment.png"
-    manifest["output"].update(width=900, height=625, samples=48, output_dir="/output")
-    manifest["output"]["passes"] = {"beauty": True, "alpha_mask": True}
-    save(payload / "manifest.json", manifest)
-    inputs = {p.name: digest(p) for p in sorted(payload.iterdir())}
-    save(payload / "inputs.json", inputs)
     modes = ("reference", "repeat", "camera_shift", "material_change", "missing_texture")
     runs = {}
     for mode in modes:
@@ -441,6 +506,17 @@ def summarize(output, runs, inputs, preparation, manifest):
     return 1 if failures else 0
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preparation-report", required=True)
+    parser.add_argument("--linux-runtime", required=True, help="Absolute Linux directory containing the checksum-verified Blender build")
+    parser.add_argument("--output-dir", required=True, help="New evidence directory")
+    parser.add_argument("--job", default=str(DEFAULT_JOB), help="Job manifest path, relative to the repository root by default")
+    parser.add_argument("--distro", default="Ubuntu")
+    parser.add_argument("--timeout", type=float, default=600)
+    return parser
+
+
 def main():
     arguments = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
     if arguments[:1] == ["--_probe"]:
@@ -452,12 +528,7 @@ def main():
         bpy.ops.wm.open_mainfile(filepath=arguments[1], load_ui=False, use_scripts=False)
         save(arguments[2], snapshot(bpy))
         return 0
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--preparation-report", required=True)
-    parser.add_argument("--linux-runtime", required=True, help="Absolute Linux directory containing the checksum-verified Blender build")
-    parser.add_argument("--output-dir", required=True, help="New evidence directory")
-    parser.add_argument("--distro", default="Ubuntu")
-    parser.add_argument("--timeout", type=float, default=600)
+    parser = build_parser()
     args = parser.parse_args(arguments)
     import math
     if not math.isfinite(args.timeout) or args.timeout <= 0:

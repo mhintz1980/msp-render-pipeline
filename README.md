@@ -43,7 +43,7 @@ environment; it can never accidentally alter the machine.
 ## Layout
 
 ```
-jobs/          the three demo manifests - this is what you edit
+jobs/          demo and reference manifests - this is what you edit
 backgrounds/   background plates, used as both HDRI and backdrop
 cad/           in-repo copy of the RL300-SAFE photoreal .blend
 demo/          numbered PowerShell scripts for the live walkthrough
@@ -89,6 +89,11 @@ seconds, instead of two minutes into a render.
 ```
 
 See **[DEMO.md](DEMO.md)** for the walkthrough script and what to say at each step.
+
+For appearance review on a neutral white sweep, use
+`jobs/rl300_04_studio-white.json`. See [the white studio reference](docs/rl300-studio-white.md)
+for its lighting, reproducible plate and independent parity-proof command.
+The approved studio-dark v6 remains the T04 engineering anchor.
 
 ## Adding a new environment
 
