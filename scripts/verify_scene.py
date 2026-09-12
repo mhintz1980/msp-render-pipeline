@@ -113,6 +113,30 @@ def stage_job_payload(output, prepared, source, job):
     return manifest, inputs
 
 
+def pixel_digest(path):
+    """Hash an image's decoded content, ignoring encoder and metadata bytes.
+
+    A file SHA-256 is the wrong comparator for `beauty.png`. Blender stamps the
+    render wall-clock into PNG tEXt chunks (`Date`, `RenderTime`,
+    `cycles.ViewLayer.total_time`), so two bit-identical renders produce two
+    different file hashes: the accepted v6 reference and the 2026-09-12 default
+    regression share IDAT sha256 101347d996e3b7ed and differ only in those
+    chunks. `mask.png` and `composite.png` are written by Pillow and carry no
+    timestamp, which is why only the beauty hash drifts and why the drift is
+    easy to miss. Digest the mode, size and decoded bytes instead, so a
+    cross-device T04 comparison measures the render and not the clock.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            im.load()
+            payload = f"{im.mode}:{im.size[0]}x{im.size[1]}:".encode() + im.tobytes()
+    except (OSError, ValueError):
+        return None
+    return hashlib.sha256(payload).hexdigest()
+
+
 def read_coverage_mask(path, alpha):
     """Decode the required saved coverage matte and check its beauty-alpha binding."""
     import numpy as np
@@ -489,7 +513,12 @@ def summarize(output, runs, inputs, preparation, manifest):
                "fixed_settings": manifest["output"], "seed": 0, "frame": 1, "device": "CPU",
                "reference_mask_sha256": digest(output / "reference/mask.png") if (output / "reference/mask.png").exists() else None,
                "reference_composite_sha256": digest(output / "reference/composite.png") if (output / "reference/composite.png").exists() else None,
-               "reference_sha256": digest(output / "reference/beauty.png") if (output / "reference/beauty.png").exists() else None}
+               "reference_sha256": digest(output / "reference/beauty.png") if (output / "reference/beauty.png").exists() else None,
+               # Compare these across devices, not the file hashes above. See pixel_digest().
+               "pixel_digest_semantics": "sha256 of PIL mode, size and decoded bytes; excludes PNG metadata",
+               "reference_mask_pixels_sha256": pixel_digest(output / "reference/mask.png"),
+               "reference_composite_pixels_sha256": pixel_digest(output / "reference/composite.png"),
+               "reference_pixels_sha256": pixel_digest(output / "reference/beauty.png")}
     save(output / "scene-parity-profile.json", profile)
     inventory = [{"path": p.relative_to(output).as_posix(), "sha256": digest(p), "size_bytes": p.stat().st_size}
                  for p in sorted(output.rglob("*")) if p.is_file() and p.name != "scene-parity-report.json"]

@@ -8,7 +8,8 @@
   "properties": {
     "schema_version": {"const": 1},
     "status": {"enum": ["blocked", "awaiting_reference_acceptance"]},
-    "owner_accepted": {"const": false},
+    "owner_accepted": {"const": false,
+      "description": "Deliberately unforgeable in verifier output: owner acceptance is an out-of-band human decision the verifier cannot observe. It is recorded in docs/rl300-parity.md keyed to the reference composite SHA-256. Do not widen this to a boolean - see 'Why owner_accepted is const: false' in that document."},
     "g0_passed": {"const": false},
     "cloud_authorized": {"const": false},
     "failures": {"type": "array", "items": {"type": "string"}},
