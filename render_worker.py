@@ -909,7 +909,7 @@ def write_matte_pass(output_dir: str):
     """
     beauty = os.path.join(output_dir, "beauty.png")
     if not os.path.exists(beauty):
-        return
+        raise RuntimeError(f"MISSING_BEAUTY: required alpha matte has no beauty source: {beauty}")
     mask_path = os.path.join(output_dir, "mask.png")
     img = bpy.data.images.load(beauty, check_existing=False)
     try:

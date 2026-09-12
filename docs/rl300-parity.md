@@ -288,3 +288,60 @@ v4 is superseded as a reference candidate but preserved as evidence. Status is
 `awaiting_reference_acceptance` with no failures; the profile stays
 `proposed_pending_owner`; `g0_passed`, `owner_accepted` and `cloud_authorized`
 remain false.
+
+## 2026-09-11 — v6 exposure candidate and missing-beauty failure
+
+Resume from `HANDOFF-2026-09-11.md`: `write_matte_pass()` now raises
+`MISSING_BEAUTY` when its required beauty source is absent. Its production call
+is guarded by `passes.alpha_mask`; the verifier's missing-texture control raises
+before importing the renderer. A real-Blender regression asserts the failure
+message, nonzero process exit, and absence of a written mask.
+
+The studio manifest retains AgX / Medium High Contrast and changes exposure from
+-0.15 to -1.5. Same-radiance view-transform and exposure comparisons support this
+choice; see [the colour study](color-study-2026-09-11.md). Source CAD, paint,
+lighting, numerical thresholds, and parity schema are unchanged in this session.
+
+Fresh preparation: `output/verification/rl300-prepared-v1/grounded-preparation-20260911-v6/`.
+Fresh proof: `output/verification/rl300-prepared-v1/parity-20260911-exposure-v6/`.
+The v5 candidate is superseded; all older evidence is preserved.
+
+- Full virtual-environment suite: 50 tests passed (latest run 50.600 seconds).
+- Five-mode isolated proof: `awaiting_reference_acceptance`, no failures.
+- Repeat: full decoded RGBA max difference 0; IoU 1.0, RGB MAE/p99 0.
+- Camera control: `SILHOUETTE_MISMATCH` and `RGB_MISMATCH`; IoU 0.827126.
+- Material control: `RGB_MISMATCH` and `SILHOUETTE_MISMATCH`; IoU 0.942842.
+- Missing texture blocks on `MISSING_DEPENDENCY: world_environment` before render.
+- All four saved masks agree byte-for-byte with beauty alpha.
+- Source-to-prepared structural differences: none. Source hash unchanged.
+- Parent recomputed all 42 inventory hashes: no mismatches.
+- Independent saved-composite check: opaque RGB max drift 0, 222,085 opaque
+  pixels, no opaque product clipped by placement.
+
+| v6 reference artifact | SHA-256 |
+|---|---|
+| beauty.png | `bfe42875da17c72fd1ab3f0189e8eb3aacc85b985d8d328534e29a6afef40920` |
+| mask.png | `ae7b9c4028b2d9cabc5c101821f71439b7479167487b1aa0b2e267e7d3a278f9` |
+| composite.png | `a9f57faa505cc1ffea15cd0bb43b38083b3461787b915f2f678585c4202892b7` |
+
+Mark selected studio-dark as the formal parity reference; sunlit remains
+additional visual evidence. `owner_accepted`, `g0_passed`, and `cloud_authorized`
+remain false. This is a 900x625 / 48-sample proof, not a production-size render.
+
+Fresh read-only review returned `ship` with no implementation blockers. The
+reviewer independently ran matte (8/8) and parity (15/15) tests and verified
+the saved hashes. Residual debt: `mask_checks` is emitted and validated when
+present, but is not required by the report schema; future independent producers
+must not rely on its omission being rejected. Product-plus-shadow coverage is
+still sensitive to the denoised shadow edge near mask byte 8. These are recorded
+for T04; thresholds and schema were not widened here.
+
+Orchestration: parent `gpt-6-astra / high` confirmed by this task's local
+`turn_context` runtime record. Requested delegates: `gpt-5.6-luna / medium`
+for read-only command extraction and `gpt-5.6-sol / high` for fresh review.
+Both completed; delegate model/effort realization and token usage are not exposed.
+
+API-equivalent cost receipt: unavailable for the whole task. Parent cumulative
+usage is observable in the local task log, but includes per-call input above the
+calculator's supported 128,000-token boundary; delegate usage and final parent
+usage are unavailable. No USD estimate, Astra repricing, or savings claim is made.

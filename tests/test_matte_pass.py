@@ -58,6 +58,29 @@ def _beauty_with_gradient_alpha(width=64, height=48):
 class TestMattePassWriter(unittest.TestCase):
     """Drives the real render_worker.write_matte_pass inside Blender."""
 
+    def test_missing_beauty_fails_requested_matte(self):
+        self.assertTrue(BLENDER.is_file(),
+                        f"Pinned Blender executable unavailable: {BLENDER}")
+        with tempfile.TemporaryDirectory() as tmp:
+            driver = Path(tmp) / "_drive_missing_beauty.py"
+            driver.write_text(textwrap.dedent("""
+                import os, sys
+                sys.path.insert(0, os.environ["MSP_REPO"])
+                import render_worker
+                render_worker.write_matte_pass(os.environ["MSP_OUT"])
+                print("UNEXPECTED_MATTE_SUCCESS")
+            """), encoding="utf-8")
+            result = subprocess.run(
+                [str(BLENDER), "--background", "--factory-startup",
+                 "--python-exit-code", "23", "--python", str(driver)],
+                capture_output=True, text=True, timeout=300,
+                env=dict(os.environ, MSP_REPO=str(ROOT), MSP_OUT=tmp))
+            combined = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 23, combined)
+            self.assertIn("MISSING_BEAUTY", combined)
+            self.assertNotIn("UNEXPECTED_MATTE_SUCCESS", combined)
+            self.assertFalse((Path(tmp) / "mask.png").exists())
+
     def test_mask_matches_beauty_alpha(self):
         # Never skip: a silent skip here would let a broken matte writer ship.
         self.assertTrue(BLENDER.is_file(),
