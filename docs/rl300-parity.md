@@ -1,5 +1,10 @@
 # RL300 local reference proof — T03
 
+**Current acceptance (2026-09-12): v6 approved by Mark and frozen as the T04
+engineering anchor, appearance expected to change.** See the
+[owner acceptance record](#2026-09-12--v6-owner-acceptance). Earlier pending-owner
+statements below describe historical run state.
+
 This gate checks the prepared scene against the source structure, renders it in
 Linux without access to the source directories, and produces a reference candidate
 for Mark. It does not grant G0, owner visual acceptance, or cloud authorization.
@@ -368,3 +373,32 @@ full-machine framing either, which is consistent with peel being sub-pixel at
 this size. They are not calibrated paint samples, and they are a different
 machine revision under different illumination, so their RGB values are evidence,
 not a target to fit exactly.
+
+## 2026-09-12 — v6 owner acceptance
+
+Mark's explicit ruling: **"I approve v6. It is no longer blocking"**.
+This supersedes the pending owner acceptance in `HANDOFF-2026-09-11-b.md`.
+
+The accepted T04 engineering anchor is the studio-dark v6 proof at
+`output/verification/rl300-prepared-v1/parity-20260911-exposure-v6/`, produced by
+the implementation committed in `e27d4a9`. **Appearance expected to change**:
+this reference may be re-anchored after future material or lighting work.
+
+| Frozen reference artifact | SHA-256 |
+|---|---|
+| `reference/beauty.png` | `bfe42875da17c72fd1ab3f0189e8eb3aacc85b985d8d328534e29a6afef40920` |
+| `reference/mask.png` | `ae7b9c4028b2d9cabc5c101821f71439b7479167487b1aa0b2e267e7d3a278f9` |
+| `reference/composite.png` | `a9f57faa505cc1ffea15cd0bb43b38083b3461787b915f2f678585c4202892b7` |
+
+All three artifact hashes were recomputed on 2026-09-12 and match the v6 record.
+The saved report still has zero failures. The original report and rendered
+artifacts remain unchanged: their `awaiting_reference_acceptance` / false
+owner flag records the machine run before this subsequent human ruling.
+This section is the authoritative acceptance addendum: `owner_accepted: true`
+for the frozen v6 reference; `g0_passed: false` and `cloud_authorized: false`.
+No thresholds were changed, and no tests or renders were rerun for this
+documentation-only acceptance update.
+
+The v6 reference-acceptance blocker is closed. Next: parameterise the verifier's
+job path, then build and verify the white soft studio reference for continued
+appearance review against the standing photographs.
