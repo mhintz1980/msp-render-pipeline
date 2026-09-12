@@ -44,6 +44,37 @@ preparation report, enabled compositing, one shared HDRI/background file, unit
 product scale and zero pixel offsets. Percentage offsets remain supported.
 Unsupported combinations fail explicitly instead of substituting another input.
 
+## Full-resolution render for appearance review
+
+The verifier's proof is 900x625 at 48 samples. That is the right size for a
+parity gate and the wrong size for judging a finish — it gives roughly 4 mm per
+pixel. Judge appearance on the production render instead:
+
+```powershell
+./.venv/Scripts/python.exe -m msp_render_cli run jobs/rl300_04_studio-white.json
+```
+
+Rendered 2026-09-12 on the host Blender 5.1.1 (`b70da489d7f4`), HIP / AMD Radeon
+780M, 1800x1250 at 96 samples. The compositor's product fidelity gate passed at
+100% exact machine pixels, maximum pixel drift 0, frame coverage 39.3%.
+
+| Full-resolution artifact | Decoded-pixel SHA-256 |
+|---|---|
+| `output/rl300_04_studio-white/beauty.png` | `dfbd1b7e5802645ec79e5dae16907f6c5679c1e2f37f858386dac01f6e0ccff8` |
+| `output/rl300_04_studio-white/mask.png` | `b250688b0b6ddcf76298a6267a9259807fe6ef5da2fcb6a52d68a55a6a00102e` |
+| `output/rl300_04_studio-white/final_rl300_04_studio-white.png` | `40f73b03d3c299e16b189010c19966217c1170f1c612e056fe825bee3ddebff6` |
+
+These are pixel digests, not file hashes — see the note on render metadata in
+[the parity record](rl300-parity.md#png-file-hashes-are-not-a-parity-comparator).
+This render is host-side and GPU-accelerated, so it is **not** parity evidence;
+the gating proof remains the isolated Linux CPU run above.
+
+`[MSP Render] Bevel shading injected into 0 materials` in that log is expected,
+not a regression: every material in `RL300-SAFE-photoreal.blend` already carries
+a BEVEL node, and `inject_bevel_shading` skips those. The practical consequence
+is that `photoreal.bevel.radius_m` is inert for this CAD source — edge rounding
+comes from the .blend and from `photoreal.powder_coat.bevel_radius_m`.
+
 ## Visual review
 
 Compare the resulting `reference/composite.png` against:

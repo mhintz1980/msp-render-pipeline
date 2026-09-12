@@ -402,3 +402,69 @@ documentation-only acceptance update.
 The v6 reference-acceptance blocker is closed. Next: parameterise the verifier's
 job path, then build and verify the white soft studio reference for continued
 appearance review against the standing photographs.
+
+## PNG file hashes are not a parity comparator
+
+Recorded 2026-09-12. This is a T04 trap, found while re-verifying the September
+12 evidence.
+
+Blender writes the render wall-clock into the beauty PNG's `tEXt` chunks —
+`Date`, `RenderTime`, `cycles.ViewLayer.total_time`, `render_time`. Two
+bit-identical renders therefore produce two different file SHA-256 values. The
+accepted v6 reference and the September 12 default-dark regression are the
+proof: both `beauty.png` files are 501,813 bytes with the same IDAT payload
+(sha256 `101347d996e3b7ed…`, 500,441 bytes), differing only in `Date`
+(`2026/09/11 18:11:31` vs `2026/09/12 05:07:53`) and the three timing strings.
+Their recorded file hashes differ; their decoded pixels are identical.
+
+`mask.png` and `composite.png` do not show this, because Pillow writes them and
+stamps no timestamp — which is exactly why the drift is easy to miss. Only the
+one artifact that comes straight out of Blender is affected.
+
+Consequence for T04: a cross-device comparison keyed on
+`scene-parity-profile.json`'s `reference_sha256` would fail on identical
+hardware for no reason but the clock. Nothing compares that field today, so this
+is a latent trap rather than a live bug. The profile now also records
+`reference_pixels_sha256`, `reference_mask_pixels_sha256` and
+`reference_composite_pixels_sha256`, each a SHA-256 over the decoded image's
+mode, dimensions and pixel bytes (`pixel_digest()` in `scripts/verify_scene.py`).
+**Compare those across devices.** The file hashes stay in the profile as a
+record of the exact bytes produced, not as a comparator.
+
+Reproduced live on 2026-09-13 by re-running the white proof through the modified
+verifier into `parity-20260913-studio-white-pixeldigest/`. Against the September
+12 white proof, zero failures and all five modes behaving as before:
+
+| Artifact | File SHA-256 | Decoded-pixel SHA-256 |
+|---|---|---|
+| `reference/beauty.png` | **differs** (`889b4283…` → `4dade7a3…`) | same (`40c59cf5…`) |
+| `reference/mask.png` | same (`c3290899…`) | same (`7abf1ad9…`) |
+| `reference/composite.png` | same (`0fa7a804…`) | same (`6dc31890…`) |
+
+Two independent renders of the same scene, and only the Blender-written artifact
+changed hash. That is the whole trap in one table.
+
+No threshold, gate flag or report schema changed. The evidence already on disk
+is untouched.
+
+## Why `owner_accepted` is `const: false` in the report schema
+
+Recorded 2026-09-12, in answer to a question that will otherwise be re-asked
+every time someone notices the mismatch.
+
+Mark accepted v6, and yet every `scene-parity-report.json` says
+`owner_accepted: false`, because `docs/scene_parity.schema.json` pins the field
+to `const: false`. That is deliberate and it stays.
+
+The report is the verifier's own testimony about a run it performed. Owner
+acceptance is an out-of-band human decision the verifier cannot observe, so a
+verifier-authored `true` would be a claim it has no standing to make — and a
+hand-edited `true` in a machine-generated file is precisely the failure mode the
+frozen-hash discipline exists to prevent. Acceptance therefore lives in the
+[acceptance addendum](#2026-09-12--v6-owner-acceptance), keyed to the reference
+composite SHA-256 that identifies exactly what was accepted.
+
+If T04 later needs a machine-readable acceptance gate, add a separate acceptance
+record keyed to that hash. Do not widen this schema: `owner_accepted`,
+`g0_passed` and `cloud_authorized` being unforgeable in verifier output is the
+property that makes the reports worth trusting.

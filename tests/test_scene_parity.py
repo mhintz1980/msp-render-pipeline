@@ -256,5 +256,47 @@ class TestVerifierJob(unittest.TestCase):
                 verify_scene.load_verification_job(job)
 
 
+class TestPixelDigest(unittest.TestCase):
+    """A cross-device comparison must measure the render, not the render clock."""
+
+    def _write(self, path, pixels, **text):
+        from PIL import PngImagePlugin
+
+        info = PngImagePlugin.PngInfo()
+        for key, value in text.items():
+            info.add_text(key, value)
+        Image.fromarray(pixels).save(path, pnginfo=info)
+
+    def test_render_metadata_changes_the_file_hash_but_not_the_pixel_hash(self):
+        pixels = np.random.default_rng(0).integers(0, 256, (11, 13, 4), dtype=np.uint8)
+        with tempfile.TemporaryDirectory(prefix="scene-pixel-digest-") as folder:
+            first = Path(folder) / "first.png"
+            second = Path(folder) / "second.png"
+            self._write(first, pixels, Date="2026/09/11 18:11:31", RenderTime="00:26.75")
+            self._write(second, pixels, Date="2026/09/12 05:07:53", RenderTime="00:22.88")
+
+            self.assertNotEqual(verify_scene.digest(first), verify_scene.digest(second))
+            self.assertEqual(verify_scene.pixel_digest(first), verify_scene.pixel_digest(second))
+
+    def test_a_single_changed_pixel_changes_the_pixel_hash(self):
+        pixels = np.zeros((6, 7, 4), dtype=np.uint8)
+        with tempfile.TemporaryDirectory(prefix="scene-pixel-digest-") as folder:
+            first = Path(folder) / "first.png"
+            second = Path(folder) / "second.png"
+            self._write(first, pixels)
+            pixels[3, 4, 1] = 1
+            self._write(second, pixels)
+
+            self.assertNotEqual(verify_scene.pixel_digest(first), verify_scene.pixel_digest(second))
+
+    def test_unreadable_image_yields_no_digest_instead_of_raising(self):
+        with tempfile.TemporaryDirectory(prefix="scene-pixel-digest-") as folder:
+            broken = Path(folder) / "broken.png"
+            broken.write_bytes(b"not a png")
+
+            self.assertIsNone(verify_scene.pixel_digest(broken))
+            self.assertIsNone(verify_scene.pixel_digest(Path(folder) / "absent.png"))
+
+
 if __name__ == "__main__":
     unittest.main()

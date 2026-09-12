@@ -93,7 +93,21 @@ See **[DEMO.md](DEMO.md)** for the walkthrough script and what to say at each st
 For appearance review on a neutral white sweep, use
 `jobs/rl300_04_studio-white.json`. See [the white studio reference](docs/rl300-studio-white.md)
 for its lighting, reproducible plate and independent parity-proof command.
-The approved studio-dark v6 remains the T04 engineering anchor.
+
+## What each RL300 environment is for
+
+The three environments answer three different questions, and swapping them
+around wastes a render. Keep the roles distinct.
+
+| Environment | Job | Role |
+|---|---|---|
+| `studio-dark` | `rl300_02_studio-dark` | **Gating parity anchor.** Not because it looks controlled — because it has the least indirect transport and denoiser variance, so it is the least likely to throw spurious cross-device failures in T04. This is the accepted v6 reference. |
+| `studio-white` | `rl300_04_studio-white` | **Visual approval.** Exposes roughness, highlights, bevels and colour, and is directly comparable to the standing RL200 photograph. Never the gating anchor. |
+| `excavationPit-sunlit` | `rl300_03_excavation-pit` | **Does it composite believably into a real scene** — a different question from whether the finish holds up. |
+
+Changing the appearance in the white studio does not revoke the dark
+acceptance, and passing parity in the dark studio is not evidence that the
+finish looks right. Each environment produces its own independent report.
 
 ## Adding a new environment
 
