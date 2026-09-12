@@ -349,8 +349,8 @@ usage are unavailable. No USD estimate, Astra repricing, or savings claim is mad
 ## Reference photographs (standing, do not lose again)
 
 ```
-C:\Projects\work-assets\photograph-studiol-200-safe-back-iso-older-whtbkgrd.jpg
-C:\Projects\work-assets\Renderingsl200-safe-iso-back-render-older-std-bkgrd.png
+C:\Projects\work-assets\photograph-studio\rl-200-safe-back-iso-older-whtbkgrd.jpg
+C:\Projects\work-assets\Renderings\rl200-safe-iso-back-render-older-std-bkgrd.png
 ```
 
 A professional photograph of the previous RL200/RL300-SAFE revision - identical
