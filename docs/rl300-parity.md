@@ -345,3 +345,26 @@ API-equivalent cost receipt: unavailable for the whole task. Parent cumulative
 usage is observable in the local task log, but includes per-call input above the
 calculator's supported 128,000-token boundary; delegate usage and final parent
 usage are unavailable. No USD estimate, Astra repricing, or savings claim is made.
+
+## Reference photographs (standing, do not lose again)
+
+```
+C:\Projects\work-assets\photograph-studiol-200-safe-back-iso-older-whtbkgrd.jpg
+C:\Projects\work-assets\Renderingsl200-safe-iso-back-render-older-std-bkgrd.png
+```
+
+A professional photograph of the previous RL200/RL300-SAFE revision - identical
+but for some sheet-metal slots - and the same photograph with the dark studio
+composited behind it. The second therefore sits in the exact environment this
+pipeline targets. These are the closest thing to ground truth available to the
+project and are the intended basis for owner visual approval.
+
+Recorded here because the instruction to use them was given in an earlier
+session and lost; it survived only because it was repeated. It is now a document,
+not a recollection.
+
+Note for anyone comparing against them: they show no resolved orange peel at
+full-machine framing either, which is consistent with peel being sub-pixel at
+this size. They are not calibrated paint samples, and they are a different
+machine revision under different illumination, so their RGB values are evidence,
+not a target to fit exactly.
