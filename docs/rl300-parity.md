@@ -1,17 +1,17 @@
 # RL300 local reference proof — T03
 
-> **No current acceptance (2026-09-13). v11 awaits Mark's review.** The flange
-> joint was rebuilt and the CAD material defects corrected in the source, which
-> changed the source to `af875e41…` and **voided the v9 acceptance** —
-> `verify_scene.py` pins the source hash, so v9's record no longer describes
-> anything that renders. See the
-> [v11 record](#2026-09-13--v11-cad-material-corrections-moved-into-the-source)
+> **Current acceptance (2026-09-13): v11 approved by Mark.** The studio-dark v11
+> proof is the accepted T04 reference for source `af875e41…`. See the
+> [v11 owner acceptance record](#2026-09-13--v11-owner-acceptance), the
+> [v11 material record](#2026-09-13--v11-cad-material-corrections-moved-into-the-source)
 > and the [v10 flange joint record](#2026-09-13--v10-flange-joint-rebuilt).
+> The reference-acceptance blocker is closed. G0 and cloud authorization remain
+> separate and have not been granted.
 > The reference-acceptance blocker is **open again**. G0 and cloud authorization
 > remain separate and have not been granted.
 
 **Superseded acceptance (2026-09-13): v9 approved by Mark**, source `d74b9b19…`,
-voided the same day by the joint rebuild. See the
+voided the same day by the flange joint rebuild. See the
 [v9 owner acceptance record](#2026-09-13--v9-owner-acceptance).
 
 **Superseded acceptance (2026-09-12): v6 approved by Mark and frozen as the T04
@@ -873,3 +873,36 @@ unused and dropped on save, taking the material count from 20 to 12.
 
 Both proofs report `awaiting_reference_acceptance`. **v11 is a candidate, not an
 anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.
+
+## 2026-09-13 — v11 owner acceptance
+
+Mark's explicit ruling, on the v11 dark and white composites: **"i approve them"**.
+
+The accepted T04 reference is the studio-dark proof at
+`output/verification/rl300-prepared-v1/parity-20260913-v11-dark-anchor/`.
+Source SHA-256:
+`af875e4100e84113393f91bfb4f471d942b07fa7f3f4fb77d1d881b4b1ea7372`.
+Prepared SHA-256:
+`f43db9a177fdf2bda350d5a9452cca75b99d0e15c97192b3a95d8b3592551633`.
+
+| Frozen reference artifact | SHA-256 |
+|---|---|
+| `reference/beauty.png` | `cba9cfbfe24f9cb73aabe7eba995d996b1d529b306505eac7d0c460f77c58ddb` |
+| `reference/mask.png` | `875ad41b6152c3d9d2a5a7cc102730549dfaa8f74cb579ac9f28b3de49756825` |
+| `reference/composite.png` | `abad9d3e26bb1066c08a79689b2b897e380e05cfba27bce74c468a86f8493c59` |
+
+Both live source hashes and all three reference artifact hashes were freshly
+checked when recording approval; they match the v11 report, which has no
+failures. The approval covers both composites he was shown — the dark anchor and
+the white proof — but studio-dark remains the formal reference and the white
+proof remains supporting visual evidence.
+
+This is the authoritative human acceptance addendum: `owner_accepted: true` for
+v11; `g0_passed: false`, `cloud_authorized: false`. Neither follows from
+reference acceptance. Historical machine reports and schemas remain unchanged,
+preserving their pre-approval state. No tests or renders were rerun for this
+documentation-only update. V11 reference acceptance is no longer blocking.
+
+The v6, v8 and v9 approvals are historical. Any further edit to
+`cad/RL300-SAFE-photoreal.blend` — including a change to the material
+corrections, which now live in the source — voids this one the moment it lands.
