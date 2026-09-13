@@ -78,6 +78,59 @@
       "bevel_radius_m": 0.001,
       "flow_scale": 130.0,
       "flow_weight": 0.6
+    },
+    "metal_finish": {
+      "enabled": true,
+      "materials": {
+        "MSP_ALUMINUM_CAST": {
+          "base_color": [
+            0.79,
+            0.795,
+            0.8
+          ],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012
+        },
+        "MSP_ALUMINUM_CAST_TURNED": {
+          "base_color": [
+            0.79,
+            0.795,
+            0.8
+          ],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012,
+          "anisotropy": 0.4,
+          "anisotropy_axis": "Y",
+          "_why_axis": "The barrel is turned on a lathe about its own axis, so the highlight stretches around it. ShaderNodeTangent in radial mode takes an OBJECT-space axis: edit_rl300_geometry.py bakes the fitting's orientation so its axis of revolution is local Y. Scoped to this cloned material because the four objects on MSP_ALUMINUM_CAST disagree - V251415K55_Aluminum Cam and Groove Hose Coupling-1 revolves about local X, and one shared axis would streak it across the barrel instead of around it."
+        },
+        "MSP_STAINLESS_FASTENER": {
+          "base_color": [
+            0.86,
+            0.865,
+            0.87
+          ],
+          "metallic": 1.0
+        },
+        "MSP_STAINLESS": {
+          "base_color": [
+            0.82,
+            0.83,
+            0.84
+          ],
+          "metallic": 1.0
+        }
+      },
+      "_why_no_reassign": "Material reassignment moved into the source blend (correct_cad_materials in scripts/edit_rl300_geometry.py) on 2026-09-13. It lived here, in one job of four, so the studio-dark anchor rendered a plastic latch. Correcting it at the model level fixes every job at once."
     }
   },
   "output": {

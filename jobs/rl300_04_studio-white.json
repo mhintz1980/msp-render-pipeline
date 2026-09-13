@@ -130,26 +130,7 @@
           "metallic": 1.0
         }
       },
-      "reassign": [
-        {
-          "match": "00023779",
-          "material": "MSP_STAINLESS"
-        },
-        {
-          "match": "^V2HWR-(BLT|WSH)",
-          "material": "MSP_STAINLESS_FASTENER"
-        },
-        {
-          "match": "^PUMP_END_CASTSTEEL-1$",
-          "material": "MSP_BLACK_CHASSIS",
-          "_why": "The Vogelsang pump end arrives as one fused solid carrying eight auto-named glTF colour materials, 95% of its faces on flat white. It is cast steel painted black, so every slot goes to the painted black chassis material rather than shading as white plastic."
-        },
-        {
-          "match": "SAE Washer",
-          "material": "MSP_STAINLESS_FASTENER",
-          "_why": "V296659A111_.625in_18-8 Stainless Steel SAE Washer-1/-2 arrive on MSP_YELLOW_PAINT from the CAD, so two stainless washers shade as powder coat. Matched on the short form because the part number contains regex metacharacters."
-        }
-      ]
+      "_why_no_reassign": "Material reassignment moved into the source blend (correct_cad_materials in scripts/edit_rl300_geometry.py) on 2026-09-13. It lived here, in one job of four, so the studio-dark anchor rendered a plastic latch. Correcting it at the model level fixes every job at once."
     }
   },
   "output": {
