@@ -5,6 +5,12 @@
 # prepare_scene.py blocks rather than removing them silently
 # (UNSUPPORTED_DEPENDENCY on `texts:Text`).
 #
+# REVISION (2026-09-13): raised face turned off. The gasket
+# V2GSK-FLG-A200-125-1 is full-face, reaching r=171.9 mm past the bolt
+# circle at r=149.2 mm, so a raised boss of r=135.4 mm left the bolts
+# clamping a 1.6 mm air gap. edit_rl300_geometry.py now RUNS this file
+# rather than only preserving it.
+#
 # REVISION: this is Mark's second version, superseding the earlier
 # `Flanged_Camlock_800AL` attempt. It produces `8in_Flange_x_8in_Camlock`:
 # 13.50 in flange OD, 1.125 in thick, 11.75 in bolt circle, eight 0.875 in
@@ -45,7 +51,7 @@ NUM_BOLT_HOLES = 8          # Quantity of flange bolt holes
 BORE_ID = 7.80              # Internal flow bore diameter
 
 # Sealing Face Options:
-HAS_RAISED_FACE = True      # Set False for Flat Face (common on cast aluminum)
+HAS_RAISED_FACE = False     # Flat face: the joint's gasket is full-face
 RAISED_FACE_DIA = 10.625    # 10-5/8" raised face diameter
 RAISED_FACE_HEIGHT = 0.0625 # 1/16" standard Class 150 raised face height
 

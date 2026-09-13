@@ -70,9 +70,12 @@ The edits, in the order they are applied:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import re
 import sys
+from pathlib import Path
 
 import bpy
 from mathutils import Matrix, Vector
@@ -122,6 +125,23 @@ BOLT_PITCH_DEG = 360.0 / BOLT_COUNT
 BOLT_CIRCLE_RADIUS_M = 5.875 * 0.0254
 # The bolts this flange has to accept, per fitting.
 BOLT_PREFIXES = ("HWR-KIT-BLF", "HWR-BLTSET")
+# --- axial seating -----------------------------------------------------------
+# Past this radius from the barrel axis you are on the flange plate rim, not the
+# neck or the cam lugs, so the plate's two faces can be measured directly.
+FLANGE_RIM_R_M = 0.160
+# A bolt/washer further than this off the fitting axis belongs to the other one.
+RING_RADIUS_LIMIT_M = 0.25
+SEAT_TOLERANCE_MM = 0.25
+MATING_FLANGE_PREFIX = "V2FLG-WO-A200-"
+# --- bolts -------------------------------------------------------------------
+BOLT_MESH = "Mesh_203_LP"
+BOLT_EXPECTED_USERS = 16
+BOLT_NOMINAL_SHANK_D_M = 0.75 * 0.0254
+BOLT_SHANK_TOL_M = 0.0005
+BOLT_MIN_SHANK_M = 0.020
+DEFAULT_BOLT_LENGTH_IN = 3.25
+# Where the replacement part is parked before it is seated.
+FITTING_PARK_M = (0.0, 2.0, 0.0)
 
 # The assembly lives in this collection; the three hand-added objects landed in
 # the scene root instead.
@@ -954,6 +974,311 @@ def drop_scaffolding(report: dict) -> None:
     report["removed_scaffolding"] = removed
 
 
+def regenerate_fitting(report: dict, raised_face: bool) -> None:
+    """Build the replacement part by running Mark's generator, not by trusting
+    an object someone authored into the .blend by hand.
+
+    The authored part carried a 1/16 in raised face, which is wrong for this
+    joint: the gasket is full-face out to the flange OD, so the raised boss left
+    the bolt circle clamping a 1.6 mm air gap. Running the generator here makes a
+    dimension change a one-line edit plus a replay, and means nobody has to open
+    Blender and risk saving over the authoring master.
+    """
+    source = Path(GENERATOR_COPY)
+    if not source.exists():
+        raise SystemExit(f"generator not found: {GENERATOR_COPY}")
+    text = source.read_text(encoding="utf-8")
+    if "HAS_RAISED_FACE = " not in text:
+        raise SystemExit("generator no longer exposes HAS_RAISED_FACE")
+    text = re.sub(
+        r"HAS_RAISED_FACE = (?:True|False)",
+        f"HAS_RAISED_FACE = {bool(raised_face)}",
+        text, count=1)
+    if "SCALE_TO_METERS = True" not in text:
+        raise SystemExit("generator is not set to metres; refusing to run it")
+
+    existing = bpy.data.objects.get(REPLACEMENT)
+    if existing is not None:
+        # Drop the mesh too. An orphaned mesh still counts as a user of its
+        # material, and Blender's save-time purge is a single pass: the mesh goes
+        # and the material stays, leaving one more material in the source than
+        # the prepared scene keeps (SOURCE_STRUCTURE_MISMATCH).
+        stale_mesh = existing.data if existing.type == "MESH" else None
+        bpy.data.objects.remove(existing, do_unlink=True)
+        if stale_mesh is not None and stale_mesh.users == 0:
+            bpy.data.meshes.remove(stale_mesh)
+    before = {o.name for o in bpy.data.objects}
+    materials_before = {m.name for m in bpy.data.materials}
+
+    namespace = {"__name__": "__main__"}
+    exec(compile(text, GENERATOR_COPY, "exec"), namespace)
+
+    built = bpy.data.objects.get(REPLACEMENT)
+    if built is None:
+        raise SystemExit(f"generator did not produce {REPLACEMENT}")
+    for name in {o.name for o in bpy.data.objects} - before - {REPLACEMENT}:
+        if name in SCAFFOLDING:
+            bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
+
+    # The generator ends by assigning its own PBR material. replace_fittings
+    # overwrites that with the turned aluminium anyway, and leaving the datablock
+    # behind puts an extra material in the source that the prepared scene drops -
+    # which the verifier reports as SOURCE_STRUCTURE_MISMATCH.
+    assigned = [m.name for m in built.data.materials if m is not None]
+    built.data.materials.clear()
+    stray_materials = []
+    candidates = sorted(
+        set(assigned) | ({m.name for m in bpy.data.materials} - materials_before))
+    for name in candidates:
+        material = bpy.data.materials.get(name)
+        if material is None:
+            continue
+        # The generator marks its material with a fake user, which would keep it
+        # in the saved file even with nothing using it.
+        material.use_fake_user = False
+        if material.users == 0:
+            bpy.data.materials.remove(material)
+            stray_materials.append(name)
+
+    # The generator builds along local +Z with the flange face at z=0.
+    # Everything downstream - bake_barrel_to_local_y, hole_ring - expects the
+    # part parked off to the side with its barrel on world Y and the flange at
+    # the +Y end, which is how Mark's hand-authored copy arrived. Rx(+90) maps
+    # local +Z to world -Y, so the flange face becomes the part's +Y extreme.
+    built.location = FITTING_PARK_M
+    built.rotation_euler = (math.pi / 2.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+
+    coords = [v.co for v in built.data.vertices]
+    axial = [c.z for c in coords]
+    rim = [c.z for c in coords if math.hypot(c.x, c.y) > FLANGE_RIM_R_M]
+    report["fitting_regenerated"] = {
+        "generator": GENERATOR_COPY,
+        "generator_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "raised_face": bool(raised_face),
+        "vertices": len(coords),
+        "polygons": len(built.data.polygons),
+        "length_mm": round((max(axial) - min(axial)) * 1000, 3),
+        "flange_plate_mm": round((max(rim) - min(rim)) * 1000, 3),
+        "discarded_materials": stray_materials,
+    }
+
+
+def _axis_index(mesh) -> int:
+    """Local axis of revolution for a turned part."""
+    scores = revolution_scores(mesh)
+    ranked = [
+        (scores[name], index)
+        for index, name in enumerate("XYZ")
+        if scores.get(name) is not None
+    ]
+    if not ranked:
+        raise SystemExit("no axis of revolution could be scored")
+    return min(ranked)[1]
+
+
+def _stations(values, tol=1e-4):
+    """Collapse coordinates into distinct axial stations."""
+    out = []
+    for value in sorted(values):
+        if not out or value - out[-1][-1] > tol:
+            out.append([value])
+        else:
+            out[-1].append(value)
+    return [sum(group) / len(group) for group in out]
+
+
+def lengthen_bolts(report: dict, target_in: float) -> None:
+    """Stretch the flange bolts to `target_in` under-head length.
+
+    The stretch is applied across the plain shank - the one long run of constant
+    radius between the head and the first thread - so the thread pitch is carried
+    rather than scaled. Refuses if that run cannot be found, because a stretch
+    applied across a thread would silently deform every crest.
+    """
+    mesh = bpy.data.meshes.get(BOLT_MESH)
+    if mesh is None:
+        raise SystemExit(f"bolt mesh not found: {BOLT_MESH}")
+    users = [o for o in bpy.data.objects if o.type == "MESH" and o.data is mesh]
+    if len(users) != BOLT_EXPECTED_USERS:
+        raise SystemExit(
+            f"{BOLT_MESH} has {len(users)} users, expected {BOLT_EXPECTED_USERS}; "
+            "refusing to edit geometry shared with anything else")
+
+    axis = _axis_index(mesh)
+    radial = [i for i in range(3) if i != axis]
+    coords = [v.co.copy() for v in mesh.vertices]
+
+    def radius(co):
+        return math.hypot(co[radial[0]], co[radial[1]])
+
+    nominal = BOLT_NOMINAL_SHANK_D_M / 2.0
+    # Only stations that actually carry the nominal shank diameter can bound the
+    # plain run. The hex corners sit on their own stations at nearly twice that
+    # radius, and picking one of those as a boundary would stretch the head.
+    on_shank = _stations([
+        c[axis] for c in coords if abs(radius(c) - nominal) <= BOLT_SHANK_TOL_M
+    ])
+    if len(on_shank) < 2:
+        raise SystemExit(
+            f"{BOLT_MESH} carries no run at {BOLT_NOMINAL_SHANK_D_M * 1000:.2f} mm "
+            "diameter; this is not the bolt this expects")
+    span, index = max(
+        (on_shank[i + 1] - on_shank[i], i) for i in range(len(on_shank) - 1))
+    low, high = on_shank[index], on_shank[index + 1]
+    if span < BOLT_MIN_SHANK_M:
+        raise SystemExit(
+            f"longest plain shank run on {BOLT_MESH} is {span * 1000:.2f} mm; "
+            "cannot stretch without deforming the thread")
+
+    # The head is whichever end carries the largest radius in the mesh.
+    head_low = max(radius(c) for c in coords if c[axis] <= low) > max(
+        radius(c) for c in coords if c[axis] >= high)
+    # Under-head length is measured from the head's bearing face - the far edge
+    # of the hex - not from where the shank cylinder happens to start.
+    head_axial = [c[axis] for c in coords if radius(c) > nominal * 1.2]
+    if not head_axial:
+        raise SystemExit(f"{BOLT_MESH}: no bolt head found")
+    under_head = max(head_axial) if head_low else min(head_axial)
+    tip = max(c[axis] for c in coords) if head_low else min(c[axis] for c in coords)
+    current = abs(tip - under_head)
+    delta = target_in * 0.0254 - current
+    if abs(delta) < 1e-6:
+        report["bolt_length"] = {"mesh": BOLT_MESH, "skipped": "already at target"}
+        return
+
+    moved = 0
+    for vertex in mesh.vertices:
+        beyond = vertex.co[axis] >= high if head_low else vertex.co[axis] <= low
+        if beyond:
+            vertex.co[axis] += delta if head_low else -delta
+            moved += 1
+    mesh.update()
+
+    report["bolt_length"] = {
+        "mesh": BOLT_MESH,
+        "bolts": len(users),
+        "plain_shank_before_mm": round(span * 1000, 3),
+        "plain_shank_after_mm": round((span + abs(delta)) * 1000, 3),
+        "under_head_before_mm": round(current * 1000, 3),
+        "under_head_after_mm": round(target_in * 0.0254 * 1000, 3),
+        "target_in": target_in,
+        "vertices_moved": moved,
+    }
+
+
+def seat_flange_hardware(report: dict) -> None:
+    """Push the inboard washers and bolts back onto the flange they clamp.
+
+    Nothing in this script moved them before. Every other placement check here is
+    radial or rotational - bolt circle, hole phase - so a replacement flange of a
+    different thickness passed every gate while burying the hardware inside
+    itself. This measures the axial stack and fails if it does not close.
+    """
+    seated = []
+    for index, name in enumerate(NEW_FITTING_NAMES):
+        fitting = bpy.data.objects.get(name)
+        if fitting is None:
+            raise SystemExit(f"fitting not found: {name}")
+        world = [fitting.matrix_world @ v.co for v in fitting.data.vertices]
+        cx = sum(v.x for v in world) / len(world)
+        cz = sum(v.z for v in world) / len(world)
+        rim = [v.y for v in world if math.hypot(v.x - cx, v.z - cz) > FLANGE_RIM_R_M]
+        if not rim:
+            raise SystemExit(f"{name}: no flange rim found to seat against")
+        back_face, front_face = min(rim), max(rim)
+
+        washers, bolts = [], []
+        for obj in bpy.data.objects:
+            if obj.type != "MESH" or not obj.name.startswith(BOLT_PREFIXES[index]):
+                continue
+            own = [obj.matrix_world @ v.co for v in obj.data.vertices]
+            ox = sum(v.x for v in own) / len(own)
+            oz = sum(v.z for v in own) / len(own)
+            if math.hypot(ox - cx, oz - cz) > RING_RADIUS_LIMIT_M:
+                continue
+            entry = (obj, min(v.y for v in own), max(v.y for v in own))
+            if "/HWR-WSH-F8Z-075-" in obj.name:
+                washers.append(entry)
+            elif "/HWR-BLT-" in obj.name:
+                bolts.append(entry)
+
+        inboard = [w for w in washers if w[2] <= front_face]
+        outboard = [w for w in washers if w[2] > front_face]
+        if len(inboard) != BOLT_COUNT or len(outboard) != BOLT_COUNT:
+            raise SystemExit(
+                f"{name}: expected {BOLT_COUNT} washers each side of the flange, "
+                f"found {len(inboard)} inboard and {len(outboard)} outboard")
+        if len(bolts) != BOLT_COUNT:
+            raise SystemExit(
+                f"{name}: found {len(bolts)} bolts, expected {BOLT_COUNT}")
+
+        before = max(w[2] for w in inboard)
+        delta = back_face - before
+        for obj, _, _ in inboard + bolts:
+            obj.location.y += delta
+        bpy.context.view_layer.update()
+
+        after = max(
+            (obj.matrix_world @ v.co).y
+            for obj, _, _ in inboard for v in obj.data.vertices)
+        residual_mm = (after - back_face) * 1000
+        if abs(residual_mm) > SEAT_TOLERANCE_MM:
+            raise SystemExit(
+                f"{name}: inboard washers still {residual_mm:.3f} mm off the "
+                "flange back face after seating")
+
+        # Second seat: the bolt heads. In the source CAD each head sinks 3.66 mm
+        # into its own washer. That was invisible while the whole stack was
+        # buried inside the flange; with the joint closed up it would show.
+        head_face = None
+        for obj, _, _ in bolts:
+            own = [obj.matrix_world @ v.co for v in obj.data.vertices]
+            bx = sum(v.x for v in own) / len(own)
+            bz = sum(v.z for v in own) / len(own)
+            heads = [
+                v.y for v in own
+                if math.hypot(v.x - bx, v.z - bz) > BOLT_NOMINAL_SHANK_D_M * 0.6
+            ]
+            if not heads:
+                raise SystemExit(f"{obj.name}: no bolt head found to seat")
+            head_face = max(heads) if head_face is None else max(head_face, max(heads))
+        washer_back = min(
+            (obj.matrix_world @ v.co).y
+            for obj, _, _ in inboard for v in obj.data.vertices)
+        head_delta = washer_back - head_face
+        for obj, _, _ in bolts:
+            obj.location.y += head_delta
+        bpy.context.view_layer.update()
+
+        mating_gap_mm = None
+        mating = bpy.data.objects.get(f"{MATING_FLANGE_PREFIX}{index + 1}")
+        if mating is not None:
+            mating_world = [mating.matrix_world @ v.co for v in mating.data.vertices]
+            mx = sum(v.x for v in mating_world) / len(mating_world)
+            mz = sum(v.z for v in mating_world) / len(mating_world)
+            if math.hypot(mx - cx, mz - cz) < RING_RADIUS_LIMIT_M:
+                mating_gap_mm = round(
+                    (min(w[1] for w in outboard)
+                     - max(v.y for v in mating_world)) * 1000, 3)
+
+        seated.append({
+            "fitting": name,
+            "flange_back_face_mm": round(back_face * 1000, 3),
+            "flange_front_face_mm": round(front_face * 1000, 3),
+            "flange_plate_mm": round((front_face - back_face) * 1000, 3),
+            "inboard_washer_before_mm": round(before * 1000, 3),
+            "moved_mm": round(delta * 1000, 3),
+            "seating_residual_mm": round(residual_mm, 4),
+            "outboard_washer_gap_to_mating_flange_mm": mating_gap_mm,
+            "bolt_head_sunk_into_washer_mm": round(-head_delta * 1000, 3),
+            "bolt_head_seated_by_mm": round(head_delta * 1000, 3),
+            "washers_moved": len(inboard),
+            "bolts_moved": len(bolts),
+        })
+    report["hardware_seating"] = seated
+
+
 def main() -> int:
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(prog="edit_rl300_geometry")
@@ -965,6 +1290,13 @@ def main() -> int:
         "--dissolve-deg", type=float, default=DEFAULT_DISSOLVE_DEG,
         help="coplanar merge angle for the pump; 0 welds only")
     parser.add_argument(
+        "--raised-face", action="store_true",
+        help="regenerate the fitting WITH a raised face (wrong for a full-face "
+             "gasket; the joint here needs a flat face)")
+    parser.add_argument(
+        "--bolt-length-in", type=float, default=DEFAULT_BOLT_LENGTH_IN,
+        help="under-head length to stretch the flange bolts to")
+    parser.add_argument(
         "--no-compress", action="store_true",
         help="save uncompressed (the authoring master is compressed)")
     args = parser.parse_args(argv)
@@ -973,8 +1305,11 @@ def main() -> int:
 
     report: dict = {"source": bpy.data.filepath}
     report["material"] = {TURNED_MATERIAL: ensure_turned_material()}
+    regenerate_fitting(report, args.raised_face)
     replace_fittings(report)
     widen_washers(report)
+    seat_flange_hardware(report)
+    lengthen_bolts(report, args.bolt_length_in)
     rehome_pump(report)
     if args.pump_glb:
         swap_pump(report, args.pump_glb, args.pump_reference)
