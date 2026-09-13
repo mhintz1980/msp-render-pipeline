@@ -1,8 +1,14 @@
 # RL300 local reference proof — T03
 
-> **Current acceptance (2026-09-13): v11 approved by Mark.** The studio-dark v11
-> proof is the accepted T04 reference for source `af875e41…`. See the
-> [v11 owner acceptance record](#2026-09-13--v11-owner-acceptance), the
+> **No current acceptance (2026-09-13). v12 awaits Mark's review.** Widening the
+> 16 enclosure washers to USS changed the source to `115fd725…` and **voided the
+> v11 acceptance**. See the [v12 record](#2026-09-13--v12-uss-washers-everywhere).
+> The reference-acceptance blocker is **open again**. G0 and cloud authorization
+> remain separate and have not been granted.
+
+**Superseded acceptance (2026-09-13): v11 approved by Mark**, source `af875e41…`,
+voided by the washer widening. See the
+[v11 owner acceptance record](#2026-09-13--v11-owner-acceptance), the
 > [v11 material record](#2026-09-13--v11-cad-material-corrections-moved-into-the-source)
 > and the [v10 flange joint record](#2026-09-13--v10-flange-joint-rebuilt).
 > The reference-acceptance blocker is closed. G0 and cloud authorization remain
@@ -906,3 +912,49 @@ documentation-only update. V11 reference acceptance is no longer blocking.
 The v6, v8 and v9 approvals are historical. Any further edit to
 `cad/RL300-SAFE-photoreal.blend` — including a change to the material
 corrections, which now live in the source — voids this one the moment it lands.
+
+## 2026-09-13 — v12 USS washers everywhere
+
+Mark, shown the enclosure joint against the photographs: **"we definitely need the
+larger washer (USS style)."**
+
+This closes the question `HANDOFF-2026-09-13-b.md` raised and nobody had put to
+him. `F8Z-075` appears at two joints. v7 widened `Mesh_205` — the 32 flange
+washers — and left `Mesh_226` alone, so the machine wore two different washers
+for the same part number: 50.80 mm at the flanges and 37.31 mm on the enclosure
+side panels.
+
+| Mesh | Joint | Instances | Before OD | After OD |
+|---|---|---|---|---|
+| `Mesh_205` | flange washers, 16 per fitting | 32 | 37.316 | 50.800 |
+| `Mesh_226` | enclosure side panel brackets, 4 bolts per side | 16 | 37.314 | 50.800 |
+
+Both are plain annuli, so the same outer-ring-only move applies: the rim goes out
+to the USS OD and the bore stays at the bolt size (20.623 mm). `widen_washers()`
+now iterates `WASHER_MESHES` instead of naming one mesh, and derives the plate's
+thin axis rather than assuming local X, so a washer authored on a different axis
+fails loudly instead of being scaled in the wrong plane.
+
+At this joint the washer was standing 2.2 mm proud of a 33.00 mm nut; it now
+stands 8.9 mm proud. That is the visible change Mark asked for.
+
+Also in this version, carried from the previous commit: the
+`outboard_washer_gap_to_mating_flange` gate now finds the mating flange by
+proximity rather than by name, so it verifies **both** fittings —
+`V2FLG-WO-A200-1` and `V2FLG-WO-A200-1.001`, both at 0.000 mm — where it
+previously reported `null` on the second.
+
+- Source SHA-256: `115fd725a9659901e035f0b6cc474449bb7d740c816d0107aa6dd7520bf3bb6a`.
+- Prepared SHA-256: `3da94b93eefb2aa41da01505d2dd6ef2b415f6daf484f3381d3acf943073e51e`.
+- Geometry evidence: `output/verification/rl300-geometry-v12/report.json`.
+- Preparation: `grounded-preparation-20260913-v12/`; status `prepared`, no blockers.
+- Dark proof: `parity-20260913-v12-dark-anchor/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0.
+- White proof: `parity-20260913-v12-studio-white/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0.
+- Tests: **59 passed**.
+- Flange seating residuals 0.000 mm on both fittings; both master and repository
+  copies hash to the source above.
+
+Both proofs report `awaiting_reference_acceptance`. **v12 is a candidate, not an
+anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.
