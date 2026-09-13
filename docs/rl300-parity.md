@@ -1,10 +1,12 @@
 # RL300 local reference proof — T03
 
-> **No current acceptance (2026-09-13). v12 awaits Mark's review.** Widening the
-> 16 enclosure washers to USS changed the source to `115fd725…` and **voided the
-> v11 acceptance**. See the [v12 record](#2026-09-13--v12-uss-washers-everywhere).
-> The reference-acceptance blocker is **open again**. G0 and cloud authorization
-> remain separate and have not been granted.
+> **Current acceptance (2026-09-13): v12 approved by Mark. T03 is complete.**
+> The studio-dark v12 proof is the accepted T04 reference for source
+> `115fd725…`. See the [v12 owner acceptance record](#2026-09-13--v12-owner-acceptance).
+> The reference-acceptance blocker is closed, and with it the last open clause of
+> the T03 contract. G0 and cloud authorization remain separate and have not been
+> granted — `g0_passed` and `cloud_authorized` are hardcoded false in verifier
+> output by design.
 
 **Superseded acceptance (2026-09-13): v11 approved by Mark**, source `af875e41…`,
 voided by the washer widening. See the
@@ -958,3 +960,43 @@ previously reported `null` on the second.
 
 Both proofs report `awaiting_reference_acceptance`. **v12 is a candidate, not an
 anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.
+
+## 2026-09-13 — v12 owner acceptance, and T03 complete
+
+Mark's explicit ruling on the v12 composites: **"approved"**.
+
+The accepted T04 reference is the studio-dark proof at
+`output/verification/rl300-prepared-v1/parity-20260913-v12-dark-anchor/`.
+Source SHA-256:
+`115fd725a9659901e035f0b6cc474449bb7d740c816d0107aa6dd7520bf3bb6a`.
+Prepared SHA-256:
+`3da94b93eefb2aa41da01505d2dd6ef2b415f6daf484f3381d3acf943073e51e`.
+
+| Frozen reference artifact | SHA-256 |
+|---|---|
+| `reference/beauty.png` | `af37fbf90aaeb169873bf38d84f98276604959dcdc5ab11ae177b93db23714b5` |
+| `reference/mask.png` | `d5d6cc457d9b9df135fa3a44ce1600dc1b797317717c0e02b884cfa574d2b7a7` |
+| `reference/composite.png` | `1dd895250989d1d0342f18a75e078ed4fff27d8a743e79b5db17a7905dd4555d` |
+
+Both live source hashes and all three reference artifact hashes were freshly
+checked when recording approval; they match the v12 report, which has no
+failures. `owner_accepted: true` for v12; `g0_passed: false`,
+`cloud_authorized: false`. Every earlier approval — v6, v9, v11 — is historical.
+
+**This closes T03.** [`docs/scene-preparation.md`](scene-preparation.md) set five
+clauses for it: reopen the payload in Linux with source directories inaccessible,
+capture evaluated structure, render the fixed reference and negative controls,
+freeze measured tolerances, and obtain Mark's reference acceptance. All five are
+satisfied by the v12 evidence. The reference that leaves T03 is the studio-dark
+composite above; the white proof remains supporting visual evidence.
+
+Compare anything downstream against this reference **by pixel digest, never file
+hash** — `reference_pixels_sha256`, `reference_mask_pixels_sha256` and
+`reference_composite_pixels_sha256` in `scene-parity-profile.json`. Blender
+stamps the render wall-clock into `beauty.png`, so the file hash drifts between
+two bit-identical renders. See
+[PNG file hashes are not a parity comparator](#png-file-hashes-are-not-a-parity-comparator).
+
+Any further edit that reaches `cad/RL300-SAFE-photoreal.blend` voids this
+acceptance the moment it lands — including a change to the CAD material
+corrections or the washer meshes, which now live in the source.

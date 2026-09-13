@@ -2,7 +2,7 @@
 
 The white studio is for appearance review: roughness, highlights, bevels and
 colour against the standing professional photograph. The accepted studio-dark
-v6 remains the T04 engineering anchor. These environments produce independent
+v12 is the accepted T04 reference as of 2026-09-13; v6 is historical. These environments produce independent
 reports; the white studio does not replace or revoke the dark acceptance.
 
 ## Job and plate
