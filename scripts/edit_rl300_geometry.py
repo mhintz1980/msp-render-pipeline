@@ -1251,16 +1251,31 @@ def seat_flange_hardware(report: dict) -> None:
             obj.location.y += head_delta
         bpy.context.view_layer.update()
 
-        mating_gap_mm = None
-        mating = bpy.data.objects.get(f"{MATING_FLANGE_PREFIX}{index + 1}")
-        if mating is not None:
-            mating_world = [mating.matrix_world @ v.co for v in mating.data.vertices]
-            mx = sum(v.x for v in mating_world) / len(mating_world)
-            mz = sum(v.z for v in mating_world) / len(mating_world)
-            if math.hypot(mx - cx, mz - cz) < RING_RADIUS_LIMIT_M:
-                mating_gap_mm = round(
-                    (min(w[1] for w in outboard)
-                     - max(v.y for v in mating_world)) * 1000, 3)
+        # Find the mating flange by where it is, not by what it is called. The
+        # second one is `V2FLG-WO-A200-1.001` - Blender's duplicate suffix, not a
+        # part suffix - so indexing the name left this check silently unverified
+        # on that fitting, reporting null instead of failing.
+        mating, best = None, None
+        for obj in bpy.data.objects:
+            if obj.type != "MESH" or not obj.name.startswith(MATING_FLANGE_PREFIX):
+                continue
+            own = [obj.matrix_world @ v.co for v in obj.data.vertices]
+            mx = sum(v.x for v in own) / len(own)
+            mz = sum(v.z for v in own) / len(own)
+            offset = math.hypot(mx - cx, mz - cz)
+            if offset < RING_RADIUS_LIMIT_M and (best is None or offset < best):
+                mating, best = (obj, own), offset
+        if mating is None:
+            raise SystemExit(
+                f"{name}: no object named {MATING_FLANGE_PREFIX}* sits on this "
+                "fitting's axis; cannot verify the outboard washer seat")
+        mating_obj, mating_world = mating
+        mating_gap_mm = round(
+            (min(w[1] for w in outboard) - max(v.y for v in mating_world)) * 1000, 3)
+        if abs(mating_gap_mm) > SEAT_TOLERANCE_MM:
+            raise SystemExit(
+                f"{name}: outboard washers sit {mating_gap_mm:.3f} mm off "
+                f"{mating_obj.name}")
 
         seated.append({
             "fitting": name,
@@ -1270,6 +1285,7 @@ def seat_flange_hardware(report: dict) -> None:
             "inboard_washer_before_mm": round(before * 1000, 3),
             "moved_mm": round(delta * 1000, 3),
             "seating_residual_mm": round(residual_mm, 4),
+            "mating_flange": mating_obj.name,
             "outboard_washer_gap_to_mating_flange_mm": mating_gap_mm,
             "bolt_head_sunk_into_washer_mm": round(-head_delta * 1000, 3),
             "bolt_head_seated_by_mm": round(head_delta * 1000, 3),
