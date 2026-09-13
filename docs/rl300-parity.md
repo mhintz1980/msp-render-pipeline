@@ -1,10 +1,16 @@
 # RL300 local reference proof — T03
 
-> **Current acceptance (2026-09-13): v9 approved by Mark.** The studio-dark v9
-> proof is the accepted T04 reference for source `d74b9b19…`. See the
-> [v9 owner acceptance record](#2026-09-13--v9-owner-acceptance).
-> The reference-acceptance blocker is closed. G0 and cloud authorization remain
-> separate and have not been granted.
+> **No current acceptance (2026-09-13). v10 awaits Mark's review.** The flange
+> joint was rebuilt, which changed the source to `ae41bc56…` and **voided the v9
+> acceptance** — `verify_scene.py` pins the source hash, so v9's record no longer
+> describes anything that renders. See the
+> [v10 flange joint record](#2026-09-13--v10-flange-joint-rebuilt).
+> The reference-acceptance blocker is **open again**. G0 and cloud authorization
+> remain separate and have not been granted.
+
+**Superseded acceptance (2026-09-13): v9 approved by Mark**, source `d74b9b19…`,
+voided the same day by the joint rebuild. See the
+[v9 owner acceptance record](#2026-09-13--v9-owner-acceptance).
 
 **Superseded acceptance (2026-09-12): v6 approved by Mark and frozen as the T04
 engineering anchor, appearance expected to change.** See the
@@ -748,3 +754,67 @@ supporting visual evidence; studio-dark remains the formal reference.
 Historical machine reports and schemas remain unchanged, preserving their
 pre-approval state. No tests or renders were rerun for this documentation-only
 update. V9 reference acceptance is no longer blocking.
+## 2026-09-13 — v10 flange joint rebuilt
+
+Mark, looking at the v9 render: "the bolts and washers didn't move when we
+replaced the flanged fitting ... Both the bolts and washers are resting INSIDE of
+the flange fitting."
+
+He was right, and the gap was in this script's own checks. Every placement gate
+was radial or rotational — bolt circle to 3 µm, hole phase to 0.12° — so a
+replacement flange of a different thickness passed everything while burying the
+hardware it was supposed to clamp. Nothing measured the axial stack.
+
+Four fixes, replayed from the PRE-V8 source:
+
+1. **The raised face is gone.** `HAS_RAISED_FACE` is now `False`. The joint's
+   gasket `V2GSK-FLG-A200-125-1` is full-face, reaching r=171.9 mm past the bolt
+   circle at r=149.2 mm, so the 1/16 in boss (r=135.4 mm) left the bolts clamping
+   a 1.6 mm air gap. Flange plate is now a flat 28.575 mm.
+2. **The inboard washers and bolts are seated**, moved 15.872 mm inboard
+   onto the flange back face. Seating residual 0.0 mm.
+3. **The bolt heads are seated on their washers.** In the source CAD each head
+   sank 3.655 mm into its own washer — invisible while the whole
+   stack was buried, but not once the joint closed up.
+4. **The bolts are 3.25 in**, up from 2.75 in, at Mark's direction. Under-head
+   69.855 mm → 82.55 mm. The stretch is applied across the plain
+   shank (26.06 → 38.755 mm), so thread pitch is carried, not scaled.
+   560 vertices moved on `Mesh_203_LP`, whose 16 users are exactly these bolts.
+
+The fitting is no longer a hand-authored object in the .blend. The script now
+**runs** `cad/generators/flanged_camlock_800al.py`, so a dimension change is a
+one-line edit plus a replay and nobody has to open Blender.
+
+The measured stack, inboard to outboard (mm along the barrel axis):
+
+| Component | From | To | Thickness |
+|---|---|---|---|
+| Bolt head | −1524.12 | −1507.70 | 16.42 |
+| Washer | −1507.70 | −1501.88 | 5.82 |
+| Fitting flange | −1501.883 | −1473.308 | 28.575 (1.125 in) |
+| Gasket | −1473.32 | −1470.14 | 3.18 (0.125 in) |
+| Mating flange `V2FLG-WO-A200-1` | −1470.14 | −1457.44 | 12.70 (0.500 in) |
+| Washer | −1457.44 | −1451.62 | 5.82 |
+| Nut | −1451.62 | −1435.35 | 16.27 |
+| Bolt tip | | −1425.15 | 10.20 proud of the nut |
+
+Clamped material 44.443 mm = 1.7497 in, matching Mark's 1.125 + 0.125 + 0.500.
+Under-head 82.55 mm = 3.250 in. No gaps and no interference anywhere in the stack.
+
+`seat_flange_hardware()` now asserts all of this and exits non-zero if the stack
+does not close, so a future flange of the wrong thickness fails loudly instead of
+rendering wrong.
+
+- Source SHA-256: `ae41bc567bbaa4849627e37c3f0e2c497784f28f2abc64c7054d0f8c64677b87`.
+- Geometry evidence: `output/verification/rl300-geometry-v10/report.json`.
+- Preparation: `grounded-preparation-20260913-v10/`; status `prepared`, no blockers.
+- Dark proof: `parity-20260913-v10-dark-anchor/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0. Negative controls detected.
+- White proof: `parity-20260913-v10-studio-white/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0.
+- Tests: **59 passed**, with Blender available.
+- Both master and repository copies hash to the source above.
+
+Both proofs report `awaiting_reference_acceptance`. **v10 is a candidate, not an
+anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.
+
