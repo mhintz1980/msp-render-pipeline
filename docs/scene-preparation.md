@@ -70,3 +70,9 @@ must remain green. Fixture construction and reports are temporary; do not replac
 T03 must reopen the payload in Linux with source directories inaccessible, capture evaluated
 structure, render the fixed reference and negative controls, freeze measured tolerances, and
 obtain Mark's reference acceptance. No visual or cloud acceptance is implied by this document.
+
+**T03 is complete as of 2026-09-13.** All five clauses are satisfied by the v12
+evidence; Mark accepted the studio-dark v12 reference for source `115fd725…`. See
+[the acceptance record](rl300-parity.md#2026-09-13--v12-owner-acceptance-and-t03-complete).
+T04 inherits that reference and must compare against it by **pixel digest**, not
+file hash.
