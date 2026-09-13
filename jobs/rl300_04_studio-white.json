@@ -96,6 +96,23 @@
           "grain_strength": 0.06,
           "grain_distance": 0.00012
         },
+        "MSP_ALUMINUM_CAST_TURNED": {
+          "base_color": [
+            0.79,
+            0.795,
+            0.8
+          ],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012,
+          "anisotropy": 0.4,
+          "anisotropy_axis": "Y",
+          "_why_axis": "The barrel is turned on a lathe about its own axis, so the highlight stretches around it. ShaderNodeTangent in radial mode takes an OBJECT-space axis: edit_rl300_geometry.py bakes the fitting's orientation so its axis of revolution is local Y. Scoped to this cloned material because the four objects on MSP_ALUMINUM_CAST disagree - V251415K55_Aluminum Cam and Groove Hose Coupling-1 revolves about local X, and one shared axis would streak it across the barrel instead of around it."
+        },
         "MSP_STAINLESS_FASTENER": {
           "base_color": [
             0.86,
@@ -121,6 +138,16 @@
         {
           "match": "^V2HWR-(BLT|WSH)",
           "material": "MSP_STAINLESS_FASTENER"
+        },
+        {
+          "match": "^PUMP_END_CASTSTEEL-1$",
+          "material": "MSP_BLACK_CHASSIS",
+          "_why": "The Vogelsang pump end arrives as one fused solid carrying eight auto-named glTF colour materials, 95% of its faces on flat white. It is cast steel painted black, so every slot goes to the painted black chassis material rather than shading as white plastic."
+        },
+        {
+          "match": "SAE Washer",
+          "material": "MSP_STAINLESS_FASTENER",
+          "_why": "V296659A111_.625in_18-8 Stainless Steel SAE Washer-1/-2 arrive on MSP_YELLOW_PAINT from the CAD, so two stainless washers shade as powder coat. Matched on the short form because the part number contains regex metacharacters."
         }
       ]
     }
