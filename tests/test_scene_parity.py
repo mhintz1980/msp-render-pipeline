@@ -205,7 +205,7 @@ class TestVerifierJob(unittest.TestCase):
         ])
 
         self.assertEqual(args.job, str(verify_scene.DEFAULT_JOB))
-        manifest, _, _ = verify_scene.load_verification_job(args.job)
+        manifest, _, _, _ = verify_scene.load_verification_job(args.job)
         self.assertEqual(manifest["job_id"], "rl300_02_studio-dark")
 
     def test_selected_job_reaches_payload(self):
@@ -222,7 +222,7 @@ class TestVerifierJob(unittest.TestCase):
             payload_manifest = json.loads((output / "payload" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["job_id"], "rl300_04_studio-white")
             self.assertEqual(payload_manifest["job_id"], "rl300_04_studio-white")
-            self.assertEqual(payload_manifest["lighting"]["hdri_path"], "/input/environment.png")
+            self.assertEqual(payload_manifest["lighting"]["hdri_path"], "/input/environment_light.png")
             self.assertEqual(payload_manifest["compositing"]["background_plate"], "/input/environment.png")
             self.assertEqual(
                 (output / "payload" / "environment.png").read_bytes(),
@@ -245,15 +245,51 @@ class TestVerifierJob(unittest.TestCase):
                     output, prepared, ROOT / "cad" / "different.blend", verify_scene.DEFAULT_JOB
                 )
 
-    def test_separate_environment_and_plate_are_rejected(self):
-        with tempfile.TemporaryDirectory(prefix="scene-verifier-assets-") as folder:
-            manifest = json.loads((ROOT / verify_scene.DEFAULT_JOB).read_text(encoding="utf-8"))
-            manifest["compositing"]["background_plate"] = "backgrounds/env_studio-white.png"
-            job = Path(folder) / "mismatched.json"
-            job.write_text(json.dumps(manifest), encoding="utf-8")
+    def test_shared_image_stages_one_payload_file(self):
+        """The dark anchor lights and backs itself with one file; its payload must not grow."""
+        source = ROOT / "cad" / "RL300-SAFE-photoreal.blend"
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-shared-") as folder:
+            output = Path(folder) / "evidence"
+            output.mkdir()
+            prepared = Path(folder) / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
 
-            with self.assertRaisesRegex(ValueError, "to reference the same file"):
-                verify_scene.load_verification_job(job)
+            verify_scene.stage_job_payload(output, prepared, source, verify_scene.DEFAULT_JOB)
+
+            payload = output / "payload"
+            self.assertFalse((payload / "environment_light.png").exists())
+            staged = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(staged["lighting"]["hdri_path"], "/input/environment.png")
+            self.assertEqual(staged["compositing"]["background_plate"], "/input/environment.png")
+
+    def test_separate_lighting_and_backdrop_are_both_staged(self):
+        """A job may light with one image and show another; both must reach the probe."""
+        source = ROOT / "cad" / "RL300-SAFE-photoreal.blend"
+        job = ROOT / "jobs" / "rl300_04_studio-white.json"
+        manifest = json.loads(job.read_text(encoding="utf-8"))
+        self.assertNotEqual(manifest["lighting"]["hdri_path"],
+                            manifest["compositing"]["background_plate"])
+
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-split-") as folder:
+            output = Path(folder) / "evidence"
+            output.mkdir()
+            prepared = Path(folder) / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
+
+            _, inputs = verify_scene.stage_job_payload(output, prepared, source, job)
+
+            payload = output / "payload"
+            staged = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(staged["lighting"]["hdri_path"], "/input/environment_light.png")
+            self.assertEqual(staged["compositing"]["background_plate"], "/input/environment.png")
+            self.assertEqual((payload / "environment.png").read_bytes(),
+                             (ROOT / manifest["compositing"]["background_plate"]).read_bytes())
+            self.assertEqual((payload / "environment_light.png").read_bytes(),
+                             (ROOT / manifest["lighting"]["hdri_path"]).read_bytes())
+            # Both images are hashed, so neither can be swapped inside the probe.
+            self.assertIn("environment.png", inputs)
+            self.assertIn("environment_light.png", inputs)
+            self.assertNotEqual(inputs["environment.png"], inputs["environment_light.png"])
 
 
 class TestPixelDigest(unittest.TestCase):

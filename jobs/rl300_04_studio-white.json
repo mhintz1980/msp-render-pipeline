@@ -1,7 +1,7 @@
 {
   "job_id": "rl300_04_studio-white",
   "package_model": "RL300_SAFE",
-  "_description": "White soft studio for appearance review against the standing RL200 photograph. Same CAD, camera and materials as the accepted v6 dark reference; neutral LDR sweep provides low-strength environment fill alongside the existing studio softboxes. This is an independent visual reference, not a replacement for the accepted dark T04 anchor.",
+  "_description": "White soft studio for appearance review against the standing RL200 photograph. Same CAD, camera and materials as the accepted v6 dark reference. The visible backdrop is the neutral white sweep; the lighting environment is a separate equirectangular studio map so bare metal has softboxes and a dark side to reflect. This is an independent visual reference, not a replacement for the accepted dark T04 anchor.",
   "cad_source": {
     "file_path": "cad/RL300-SAFE-photoreal.blend",
     "format": "blend",
@@ -14,23 +14,40 @@
     "elevation_deg": 11.0,
     "azimuth_deg": 42.0,
     "distance_multiplier": 6.6,
-    "target_offset": [0.0, 0.0, 0.92],
-    "depth_of_field": {"enabled": true, "f_stop": 11.0, "blades": 8}
+    "target_offset": [
+      0.0,
+      0.0,
+      0.92
+    ],
+    "depth_of_field": {
+      "enabled": true,
+      "f_stop": 11.0,
+      "blades": 8
+    }
   },
-  "geometry": {"smooth_hardware": false, "hide_misplaced_isolators": true},
-  "livery": {"preset": "preserve_existing"},
+  "geometry": {
+    "smooth_hardware": false,
+    "hide_misplaced_isolators": true
+  },
+  "livery": {
+    "preset": "preserve_existing"
+  },
   "lighting": {
     "preset": "studio_white",
     "intensity_multiplier": 0.7,
     "analytic_lights": true,
     "shadow_catcher": true,
-    "hdri_path": "backgrounds/env_studio-white.png",
-    "hdri_strength": 0.35,
+    "hdri_path": "backgrounds/env_studio-softbox.png",
+    "hdri_strength": 2.0,
     "hdri_rotation_deg": 0.0
   },
   "photoreal": {
     "enabled": true,
-    "bevel": {"enabled": true, "radius_m": 0.0004, "samples": 4},
+    "bevel": {
+      "enabled": true,
+      "radius_m": 0.0004,
+      "samples": 4
+    },
     "quality": {
       "max_bounces": 8,
       "diffuse_bounces": 3,
@@ -47,7 +64,9 @@
     },
     "powder_coat": {
       "enabled": true,
-      "materials": ["MSP_YELLOW_PAINT"],
+      "materials": [
+        "MSP_YELLOW_PAINT"
+      ],
       "coat_weight": 0.85,
       "coat_roughness": 0.05,
       "roughness_min": 0.34,
@@ -59,6 +78,51 @@
       "bevel_radius_m": 0.001,
       "flow_scale": 130.0,
       "flow_weight": 0.6
+    },
+    "metal_finish": {
+      "enabled": true,
+      "materials": {
+        "MSP_ALUMINUM_CAST": {
+          "base_color": [
+            0.79,
+            0.795,
+            0.8
+          ],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012
+        },
+        "MSP_STAINLESS_FASTENER": {
+          "base_color": [
+            0.86,
+            0.865,
+            0.87
+          ],
+          "metallic": 1.0
+        },
+        "MSP_STAINLESS": {
+          "base_color": [
+            0.82,
+            0.83,
+            0.84
+          ],
+          "metallic": 1.0
+        }
+      },
+      "reassign": [
+        {
+          "match": "00023779",
+          "material": "MSP_STAINLESS"
+        },
+        {
+          "match": "^V2HWR-(BLT|WSH)",
+          "material": "MSP_STAINLESS_FASTENER"
+        }
+      ]
     }
   },
   "output": {
@@ -88,7 +152,13 @@
     "shadow_opacity": 0.0,
     "sun_direction": "top_left",
     "product_scale": 1.0,
-    "product_offset_px": [0, 0],
-    "product_offset_pct": [0.0, -0.02]
+    "product_offset_px": [
+      0,
+      0
+    ],
+    "product_offset_pct": [
+      0.0,
+      -0.02
+    ]
   }
 }

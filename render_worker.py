@@ -591,6 +591,174 @@ def inject_bevel_shading(radius: float = 0.0004, samples: int = 4,
     return touched
 
 
+def _reassign_materials(rules) -> int:
+    """Move objects onto the material their hardware actually is.
+
+    The CAD export drops a lot of bought-in hardware onto MSP_PLASTIC: the
+    Allegis latch paddle, and 36 zinc bolts and washers. Shading a plated bolt
+    as a dielectric is why fasteners read as grey pips instead of metal. The
+    material itself cannot be fixed, because MSP_PLASTIC also covers genuine
+    plastic on 79 other parts - the assignment is what is wrong, so the rules
+    are per object name and live in the manifest where they are reviewable.
+    """
+    import re
+
+    moved = 0
+    for rule in rules:
+        pattern, target = rule.get("match"), rule.get("material")
+        if not pattern or not target:
+            raise ValueError(f"metal_finish.reassign needs 'match' and 'material': {rule}")
+        material = bpy.data.materials.get(target)
+        if material is None:
+            raise ValueError(f"metal_finish.reassign target material not found: {target}")
+        expr = re.compile(pattern)
+        matched, writes = 0, 0
+        for obj in bpy.data.objects:
+            if obj.type != "MESH" or not expr.search(obj.name):
+                continue
+            matched += 1
+            for slot in obj.material_slots:
+                if slot.material is not None and slot.material.name != target:
+                    slot.material = material
+                    writes += 1
+        if not matched:
+            # A rule that matches nothing is a silent regression the next time
+            # the CAD is re-exported and a part number changes.
+            raise ValueError(f"metal_finish.reassign rule matched no object: {pattern}")
+        moved += matched
+        # Linked duplicates share one mesh, so a handful of writes can cover
+        # every instance. Report the objects, which is what the count means.
+        print(f"[MSP Render] Reassigned {matched} object(s) matching '{pattern}' -> {target} "
+              f"({writes} slot write(s); linked duplicates share mesh data).")
+    return moved
+
+
+def apply_metal_finish(spec: Dict[str, Any]):
+    """Give bare metal the two things a single roughness value cannot give it.
+
+    A metal has no colour of its own; what you see is its surroundings, shaped
+    by how the surface scatters them. The CAD materials carry one roughness
+    across a whole part, so a cast coupling returns the same soft grey wash
+    everywhere and reads as painted plastic. Two things are missing:
+
+    1. **A machined/cast split.** On the real coupling a turned band sits
+       directly against a sandcast rim - semi-gloss beside visibly rough, on one
+       part, inches apart. That juxtaposition is most of what says "machined
+       metal". One noise field cannot produce it, so this builds a mask from a
+       large-scale noise and maps the two roughness values through it.
+    2. **Anisotropy.** These couplings are turned on a lathe, so the highlight
+       stretches around the barrel rather than sitting as a round spot. Cycles
+       needs a tangent to know which way to stretch it, so a radial Tangent node
+       is wired in when an axis is given.
+
+    Sand grain rides underneath as a bump. It never resolves at full-machine
+    framing, but it breaks up the highlight edge, which does.
+    """
+    if not spec.get("enabled", False):
+        return 0
+
+    moved = _reassign_materials(spec.get("reassign", []))
+    touched = 0
+    for name, finish in (spec.get("materials") or {}).items():
+        mat = bpy.data.materials.get(name)
+        if mat is None or not mat.use_nodes:
+            raise ValueError(f"metal_finish: material {name} not found in the scene")
+        bsdfs = _principled_nodes(mat)
+        if not bsdfs:
+            raise ValueError(f"metal_finish: {name} has no Principled BSDF")
+        nodes, links = mat.node_tree.nodes, mat.node_tree.links
+
+        base = finish.get("base_color")
+        rough_machined = finish.get("roughness_machined")
+        rough_cast = finish.get("roughness_cast")
+        cast_scale = finish.get("cast_scale", 14.0)
+        anisotropy = finish.get("anisotropy")
+        axis = finish.get("anisotropy_axis")
+        grain_scale = finish.get("grain_scale")
+        grain_strength = finish.get("grain_strength", 0.15)
+        grain_distance = finish.get("grain_distance", 0.00015)
+
+        split = None
+        if rough_machined is not None and rough_cast is not None:
+            noise = nodes.new("ShaderNodeTexNoise")
+            noise.location = (-1400, 500)
+            noise.inputs["Scale"].default_value = cast_scale
+            noise.inputs["Detail"].default_value = 2.0
+            noise.inputs["Roughness"].default_value = 0.55
+            geo = nodes.new("ShaderNodeNewGeometry")
+            geo.location = (-1600, 500)
+            links.new(geo.outputs["Position"], noise.inputs["Vector"])
+            split = nodes.new("ShaderNodeMapRange")
+            split.location = (-1180, 500)
+            # Noise clusters around the middle; remap the band it actually
+            # occupies so both surfaces reach their stated roughness.
+            split.inputs["From Min"].default_value = 0.36
+            split.inputs["From Max"].default_value = 0.64
+            split.inputs["To Min"].default_value = rough_machined
+            split.inputs["To Max"].default_value = rough_cast
+            split.clamp = True
+            links.new(noise.outputs["Fac"], split.inputs["Value"])
+
+        bump = None
+        if grain_scale:
+            grain = nodes.new("ShaderNodeTexNoise")
+            grain.location = (-1400, 220)
+            grain.inputs["Scale"].default_value = grain_scale
+            grain.inputs["Detail"].default_value = 3.0
+            grain.inputs["Roughness"].default_value = 0.65
+            grain_geo = nodes.new("ShaderNodeNewGeometry")
+            grain_geo.location = (-1600, 220)
+            links.new(grain_geo.outputs["Position"], grain.inputs["Vector"])
+            bump = nodes.new("ShaderNodeBump")
+            bump.location = (-1180, 220)
+            bump.inputs["Strength"].default_value = grain_strength
+            bump.inputs["Distance"].default_value = grain_distance
+            links.new(grain.outputs["Fac"], bump.inputs["Height"])
+
+        tangent = None
+        if axis:
+            tangent = nodes.new("ShaderNodeTangent")
+            tangent.location = (-1180, -60)
+            tangent.direction_type = "RADIAL"
+            tangent.axis = axis
+
+        for bsdf in bsdfs:
+            if base is not None:
+                bsdf.inputs["Base Color"].default_value = (base[0], base[1], base[2], 1.0)
+            if "metallic" in finish:
+                bsdf.inputs["Metallic"].default_value = finish["metallic"]
+            rough_in = bsdf.inputs["Roughness"]
+            if split is not None:
+                for link in list(rough_in.links):
+                    links.remove(link)
+                links.new(split.outputs["Result"], rough_in)
+            elif "roughness" in finish:
+                for link in list(rough_in.links):
+                    links.remove(link)
+                rough_in.default_value = finish["roughness"]
+            if anisotropy is not None:
+                aniso_in = bsdf.inputs.get("Anisotropic")
+                if aniso_in is not None:
+                    aniso_in.default_value = anisotropy
+                if tangent is not None:
+                    tangent_in = bsdf.inputs.get("Tangent")
+                    if tangent_in is not None:
+                        links.new(tangent.outputs["Tangent"], tangent_in)
+            if bump is not None:
+                normal_in = bsdf.inputs.get("Normal")
+                if normal_in is not None:
+                    # Feed any existing bevel/bump chain through the grain so
+                    # edge rounding survives; inject_bevel_shading runs later.
+                    if normal_in.is_linked:
+                        links.new(normal_in.links[0].from_socket, bump.inputs["Normal"])
+                    links.new(bump.outputs["Normal"], normal_in)
+        touched += 1
+
+    print(f"[MSP Render] Metal finish applied to {touched} material(s); "
+          f"{moved} material slot(s) reassigned.")
+    return touched
+
+
 def apply_powder_coat(spec: Dict[str, Any]):
     """Turn a flat painted CAD material into something that reads as powder coat.
 
@@ -815,6 +983,7 @@ def apply_photoreal_pass(scene, manifest: Dict[str, Any], target=None):
     # Normal input and must see the final node graph.
     polish_cad_materials(manifest.get("material_polish", {}))
     apply_powder_coat(photo.get("powder_coat", {}))
+    apply_metal_finish(photo.get("metal_finish", {}))
 
     bevel = photo.get("bevel", {})
     if bevel.get("enabled", True):
