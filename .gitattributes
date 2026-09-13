@@ -1,0 +1,7 @@
+# Blend files are binary. Git already detects this by content, but pinning it
+# means an added .gitattributes or a core.autocrlf change can never mangle the
+# one recoverable copy of the accepted source.
+*.blend binary
+*.blend1 binary
+*.glb binary
+*.png binary
