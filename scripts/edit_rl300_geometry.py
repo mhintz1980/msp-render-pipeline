@@ -91,6 +91,13 @@ NEW_FITTING_NAMES = (
     "V2FTG-CAMLOCK-800AL-2",
 )
 
+# Every 3/4 in SAE flat washer in the assembly, by the mesh they share.
+# `F8Z-075` appears at two joints; widening one and not the other is how the
+# machine ended up wearing two different washers for the same part number.
+WASHER_MESHES = (
+    ("Mesh_205", 32, "flange washers, 16 per fitting"),
+    ("Mesh_226", 16, "enclosure side panel brackets, 4 bolts per side"),
+)
 WASHER_MESH = "Mesh_205"
 WASHER_TARGET_OD_MM = 50.80  # 3/4 in USS wide pattern, 2.000 in
 WASHER_EXPECTED_USERS = 32
@@ -687,67 +694,91 @@ def replace_fittings(report: dict) -> None:
     _ = scene
 
 
-def widen_washers(report: dict) -> None:
-    """Move the outer ring of the shared washer annulus out to the USS OD."""
-    mesh = bpy.data.meshes.get(WASHER_MESH)
+def _widen_one_washer(mesh_name: str, expected_users: int, joint: str) -> dict:
+    """Move the outer ring of one shared washer annulus out to the USS OD."""
+    mesh = bpy.data.meshes.get(mesh_name)
     if mesh is None:
-        raise SystemExit(f"washer mesh not found: {WASHER_MESH}")
-    if mesh.users != WASHER_EXPECTED_USERS:
+        raise SystemExit(f"washer mesh not found: {mesh_name}")
+    if mesh.users != expected_users:
         raise SystemExit(
-            f"{WASHER_MESH} has {mesh.users} users, expected "
-            f"{WASHER_EXPECTED_USERS}; refusing to reshape shared geometry"
-        )
+            f"{mesh_name} has {mesh.users} users, expected {expected_users}; "
+            "refusing to reshape shared geometry")
 
     coords = [v.co for v in mesh.vertices]
-    extents = {
-        "X": max(c.x for c in coords) - min(c.x for c in coords),
-        "Y": max(c.y for c in coords) - min(c.y for c in coords),
-        "Z": max(c.z for c in coords) - min(c.z for c in coords),
-    }
-    thin = min(extents, key=extents.get)
-    if thin != "X":
-        raise SystemExit(f"expected washer thickness on local X, measured {thin}")
-    centre_y = (max(c.y for c in coords) + min(c.y for c in coords)) / 2.0
-    centre_z = (max(c.z for c in coords) + min(c.z for c in coords)) / 2.0
+    extents = [
+        max(c[i] for c in coords) - min(c[i] for c in coords) for i in range(3)
+    ]
+    thin = min(range(3), key=lambda i: extents[i])
+    plane = [i for i in range(3) if i != thin]
+    # A washer is a thin plate. If the shortest axis is not decisively shorter
+    # than the other two, this is not the shape the outer-ring move assumes.
+    if extents[thin] > min(extents[i] for i in plane) * 0.5:
+        raise SystemExit(
+            f"{mesh_name} is not plate-like: extents "
+            f"{[round(e * 1000, 2) for e in extents]} mm")
 
-    radii = [math.hypot(c.y - centre_y, c.z - centre_z) for c in coords]
-    outer = max(radii)
-    inner = min(radii)
+    centre = [
+        (max(c[i] for c in coords) + min(c[i] for c in coords)) / 2.0
+        for i in range(3)
+    ]
+
+    def radius_of(co):
+        return math.hypot(co[plane[0]] - centre[plane[0]],
+                          co[plane[1]] - centre[plane[1]])
+
+    radii = [radius_of(c) for c in coords]
+    outer, inner = max(radii), min(radii)
     # A flat washer is an annulus: two vertex radii and nothing between them. If
     # that is not what this mesh is, the outer-ring move is the wrong operation.
-    midpoint = (inner + outer) / 2.0
     between = [r for r in radii if inner * 1.02 < r < outer * 0.98]
     if between:
         raise SystemExit(
-            f"{WASHER_MESH} is not a plain annulus: {len(between)} vertices sit "
-            "between the bore and the rim"
-        )
+            f"{mesh_name} is not a plain annulus: {len(between)} vertices sit "
+            "between the bore and the rim")
 
     target_outer = WASHER_TARGET_OD_MM / 2000.0  # mm diameter -> m radius
     scale = target_outer / outer
+    midpoint = (inner + outer) / 2.0
     moved = 0
     for vertex in mesh.vertices:
-        radius = math.hypot(vertex.co.y - centre_y, vertex.co.z - centre_z)
-        if radius < midpoint:
-            continue  # bore stays at the 20.62 mm bolt size
-        vertex.co.y = centre_y + (vertex.co.y - centre_y) * scale
-        vertex.co.z = centre_z + (vertex.co.z - centre_z) * scale
+        if radius_of(vertex.co) < midpoint:
+            continue  # the bore stays at the bolt size
+        for axis in plane:
+            vertex.co[axis] = centre[axis] + (vertex.co[axis] - centre[axis]) * scale
         moved += 1
     mesh.update()
 
-    after = [
-        math.hypot(v.co.y - centre_y, v.co.z - centre_z) for v in mesh.vertices
-    ]
-    report["washers"] = {
-        "mesh": mesh.name,
-        "instances": WASHER_EXPECTED_USERS,
+    after = [radius_of(v.co) for v in mesh.vertices]
+    return {
+        "mesh": mesh_name,
+        "joint": joint,
+        "instances": expected_users,
         "vertices_moved": moved,
         "before_od_mm": round(outer * 2000, 3),
         "after_od_mm": round(max(after) * 2000, 3),
         "bore_id_mm": round(min(after) * 2000, 3),
-        "thickness_mm": round(extents["X"] * 1000, 3),
+        "thickness_mm": round(extents[thin] * 1000, 3),
+        "thin_axis": "XYZ"[thin],
         "outer_scale": round(scale, 6),
     }
+
+
+def widen_washers(report: dict) -> None:
+    """Widen every 3/4 in SAE washer in the assembly to the USS wide pattern.
+
+    `Mesh_205` (the 32 flange washers) was widened in v7. `Mesh_226` - the 16 on
+    the enclosure side panel brackets - carries the same `F8Z-075` part number at
+    a different joint and was left behind, so the machine wore two different
+    washers for the same bolt. Mark's call on 2026-09-13, looking at the joint
+    against the photographs: "we definitely need the larger washer (USS style)".
+
+    Both are plain annuli, so the same outer-ring-only move applies: the rim goes
+    out to the USS OD and the bore stays at the bolt size.
+    """
+    report["washers"] = [
+        _widen_one_washer(mesh, users, joint)
+        for mesh, users, joint in WASHER_MESHES
+    ]
 
 
 def rehome_pump(report: dict) -> None:
