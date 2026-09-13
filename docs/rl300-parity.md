@@ -1,10 +1,12 @@
 # RL300 local reference proof — T03
 
-> **No current acceptance (2026-09-13). v10 awaits Mark's review.** The flange
-> joint was rebuilt, which changed the source to `ae41bc56…` and **voided the v9
-> acceptance** — `verify_scene.py` pins the source hash, so v9's record no longer
-> describes anything that renders. See the
-> [v10 flange joint record](#2026-09-13--v10-flange-joint-rebuilt).
+> **No current acceptance (2026-09-13). v11 awaits Mark's review.** The flange
+> joint was rebuilt and the CAD material defects corrected in the source, which
+> changed the source to `af875e41…` and **voided the v9 acceptance** —
+> `verify_scene.py` pins the source hash, so v9's record no longer describes
+> anything that renders. See the
+> [v11 record](#2026-09-13--v11-cad-material-corrections-moved-into-the-source)
+> and the [v10 flange joint record](#2026-09-13--v10-flange-joint-rebuilt).
 > The reference-acceptance blocker is **open again**. G0 and cloud authorization
 > remain separate and have not been granted.
 
@@ -818,3 +820,56 @@ rendering wrong.
 Both proofs report `awaiting_reference_acceptance`. **v10 is a candidate, not an
 anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.
 
+## 2026-09-13 — v11 CAD material corrections moved into the source
+
+Mark, on the v10 anchor: "What happened to the latches? I thought we fixed those
+to have stainless steel latches and key barrel because it was assigned a plastic
+look."
+
+They were never fixed in that render. The four `metal_finish.reassign` rules
+added on 2026-09-12 went into `jobs/rl300_04_studio-white.json` **only**.
+`00023779` and `reassign` have never appeared in `jobs/rl300_02_studio-dark.json`
+in any commit, so the studio-dark anchor — and `rl300_01_no-background` and
+`rl300_03_excavation-pit` — rendered the latch on `MSP_PLASTIC` the whole time,
+v9 included. The white proof was the only place the fix was ever visible.
+
+These rules correct the CAD *assignment*, not the material: the latch is
+stainless whatever the environment. Keeping them in one job manifest out of four
+is what let this hide. `correct_cad_materials()` in
+`scripts/edit_rl300_geometry.py` now applies them to the source, so every job
+inherits them:
+
+| Match | Material | Objects | Slots written |
+|---|---|---|---|
+| `00023779` | `MSP_STAINLESS` | 6 | 1 |
+| `^V2HWR-(BLT|WSH)` | `MSP_STAINLESS_FASTENER` | 27 | 4 |
+| `^PUMP_END_CASTSTEEL-1$` | `MSP_BLACK_CHASSIS` | 1 | 8 |
+| `SAE Washer` | `MSP_STAINLESS_FASTENER` | 2 | 1 |
+
+It refuses a rule that matches nothing — a silent regression the next time a part
+number changes — and, unlike the manifest version, refuses a mesh shared between
+a matching and a non-matching object rather than dragging the stranger along.
+
+`metal_finish.reassign` is removed from the white job; `metal_finish.materials`
+is added to the dark job so the anchor gets the same turned-aluminium, stainless
+and fastener tuning the white reference has.
+
+**The cost of this move:** these corrections are now part of the source hash.
+Changing one means a new source version and a new acceptance round, where in the
+manifest it was free. That is the trade for having all four jobs correct.
+
+Side effect: the eight auto-named glTF colour materials the pump carried are now
+unused and dropped on save, taking the material count from 20 to 12.
+
+- Source SHA-256: `af875e4100e84113393f91bfb4f471d942b07fa7f3f4fb77d1d881b4b1ea7372`.
+- Geometry evidence: `output/verification/rl300-geometry-v11/report.json`.
+- Preparation: `grounded-preparation-20260913-v11/`; status `prepared`, no blockers.
+- Dark proof: `parity-20260913-v11-dark-anchor/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0.
+- White proof: `parity-20260913-v11-studio-white/`; exit 0, no failures, all mask
+  checks pass, repeat coverage delta 0.
+- Tests: **59 passed**.
+- Both master and repository copies hash to the source above.
+
+Both proofs report `awaiting_reference_acceptance`. **v11 is a candidate, not an
+anchor**; `owner_accepted: false`, `g0_passed: false`, `cloud_authorized: false`.

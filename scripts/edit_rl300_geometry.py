@@ -1279,6 +1279,97 @@ def seat_flange_hardware(report: dict) -> None:
     report["hardware_seating"] = seated
 
 
+CAD_MATERIAL_CORRECTIONS = (
+    # The CAD export drops bought-in hardware onto whatever material the
+    # supplier's file carried. These are defects in the *assignment*, not in the
+    # material - MSP_PLASTIC also covers genuine plastic on 79 other parts - so
+    # they are corrected per object name.
+    #
+    # They used to live in jobs/rl300_04_studio-white.json. That put them in one
+    # job out of four: the studio-dark anchor, no-background and excavation-pit
+    # all rendered a plastic latch, and nobody noticed until Mark saw it in the
+    # v10 anchor. Correcting them in the source fixes every job at once.
+    (
+        r"00023779", "MSP_STAINLESS",
+        "The six Allegis latch paddles and key barrels arrive on MSP_PLASTIC. "
+        "They are stainless, and shading them as a dielectric is why they read "
+        "as grey plastic pips instead of metal.",
+    ),
+    (
+        r"^V2HWR-(BLT|WSH)", "MSP_STAINLESS_FASTENER",
+        "36 zinc-plated bolts and washers arrive on MSP_PLASTIC.",
+    ),
+    (
+        r"^PUMP_END_CASTSTEEL-1$", "MSP_BLACK_CHASSIS",
+        "The Vogelsang pump end is one fused solid carrying eight auto-named "
+        "glTF colour materials, 95% of its faces flat white. It is cast steel "
+        "painted black.",
+    ),
+    (
+        r"SAE Washer", "MSP_STAINLESS_FASTENER",
+        "Two stainless SAE washers arrive on MSP_YELLOW_PAINT and shade as "
+        "powder coat. Matched on the short form because the part number "
+        "contains regex metacharacters.",
+    ),
+)
+
+
+def correct_cad_materials(report: dict) -> None:
+    """Put bought-in hardware onto the material it actually is.
+
+    Mirrors what `_reassign_materials` in render_worker.py did from the job
+    manifest, with one addition: a mesh shared between a matching and a
+    non-matching object is refused rather than silently dragging the other
+    object onto the new material.
+    """
+    applied = []
+    for pattern, target, why in CAD_MATERIAL_CORRECTIONS:
+        material = bpy.data.materials.get(target)
+        if material is None:
+            raise SystemExit(f"material correction target not found: {target}")
+        expr = re.compile(pattern)
+        matched = [
+            obj for obj in bpy.data.objects
+            if obj.type == "MESH" and expr.search(obj.name)
+        ]
+        if not matched:
+            # A rule that matches nothing is a silent regression the next time
+            # the CAD is re-exported and a part number changes.
+            raise SystemExit(f"material correction matched no object: {pattern}")
+
+        writes = 0
+        for mesh in {obj.data.name: obj.data for obj in matched}.values():
+            users = [
+                obj.name for obj in bpy.data.objects
+                if obj.type == "MESH" and obj.data is mesh
+            ]
+            strangers = [name for name in users if not expr.search(name)]
+            if strangers:
+                raise SystemExit(
+                    f"{pattern}: mesh {mesh.name} is shared with "
+                    f"{strangers[:3]}; refusing to move them too")
+            for index, slot in enumerate(mesh.materials):
+                if slot is not None and slot.name != target:
+                    mesh.materials[index] = material
+                    writes += 1
+            if not mesh.materials:
+                mesh.materials.append(material)
+                writes += 1
+            for polygon in mesh.polygons:
+                polygon.material_index = min(
+                    polygon.material_index, max(0, len(mesh.materials) - 1))
+            mesh.update()
+
+        applied.append({
+            "match": pattern,
+            "material": target,
+            "objects": len(matched),
+            "slots_written": writes,
+            "_why": why,
+        })
+    report["cad_material_corrections"] = applied
+
+
 def main() -> int:
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(prog="edit_rl300_geometry")
@@ -1316,6 +1407,7 @@ def main() -> int:
     reduce_pump(report, args.dissolve_deg)
     if args.pump_glb and not report["pump_reduction"]["watertight_after_weld"]:
         raise SystemExit("coarse pump did not weld watertight; refusing to save")
+    correct_cad_materials(report)
     drop_scaffolding(report)
     drop_embedded_texts(report)
     strip_geometry_nodes(report)
