@@ -8,14 +8,25 @@ reports; the white studio does not replace or revoke the dark acceptance.
 ## Job and plate
 
 - Job: `jobs/rl300_04_studio-white.json`.
-- Plate: `backgrounds/env_studio-white.png`, 1800x1250 RGB, a seamless neutral
+- Backdrop: `backgrounds/env_studio-white.png`, 1800x1250 RGB, a seamless neutral
   sweep ranging from byte 236 to 252 with no baked object or shadow.
-- Regenerate the plate: `./.venv/Scripts/python.exe scripts/build_studio_white_plate.py`.
-- Lighting: existing `studio_white` analytic rig at intensity 0.7, with the plate
-  supplying neutral environment fill at strength 0.35 and rotation 0 degrees.
-- The PNG is an authored LDR environment, not a calibrated HDR panorama.
-- Camera, source CAD, geometry settings, material settings and colour management
-  match the accepted dark v6. AgX / Medium High Contrast / exposure -1.5 stays.
+  Regenerate: `./.venv/Scripts/python.exe scripts/build_studio_white_plate.py`.
+- Lighting environment: `backgrounds/env_studio-softbox.png`, 2048x1024
+  equirectangular, at strength 2.0 and rotation 0 degrees, alongside the existing
+  `studio_white` analytic rig at intensity 0.7.
+  Regenerate: `./.venv/Scripts/python.exe scripts/build_studio_softbox_env.py`.
+- **The backdrop and the lighting environment are deliberately different files.**
+  A backdrop wants to be featureless. Bare metal has no colour of its own - what
+  you see is its surroundings - so lit by a featureless gradient the cast
+  aluminium fittings reflected the same near-white in every direction and
+  collapsed into flat pale grey. The softbox map gives them two bright sources, a
+  top strip and a dark band to reflect; the dark band is what puts a shoulder on
+  the highlight across a curved barrel.
+- Both PNGs are authored LDR environments, not calibrated HDR panoramas. The
+  renderer multiplies by `hdri_strength`, so the ratio between the sources and
+  the walls is what carries the look, not the absolute values.
+- Camera, source CAD, geometry settings and colour management match the accepted
+  dark v6. AgX / Medium High Contrast / exposure -1.5 stays.
 - The Cycles shadow catcher supplies the ground shadow. `shadow_opacity: 0`
   disables the compositor's additional synthetic shadow for this white job.
 
@@ -30,7 +41,7 @@ verifier checks the original and prepared scene hashes before rendering.
   --job jobs/rl300_04_studio-white.json `
   --preparation-report output/verification/rl300-prepared-v1/grounded-preparation-20260911-v6/preparation-report.json `
   --linux-runtime /home/markimus/.cache/studiomark/blender-5.1.1-20260910/blender-5.1.1-linux-x64 `
-  --output-dir output/verification/rl300-prepared-v1/parity-20260912-studio-white-v1 `
+  --output-dir output/verification/rl300-prepared-v1/parity-20260913-studio-white-metal `
   --timeout 600
 ```
 
@@ -40,9 +51,16 @@ render remains 1800x1250 / 96 samples. No threshold or report schema is widened.
 
 Relative job and asset paths resolve from the repository root; absolute paths
 are also accepted. This verifier requires the job's CAD source to match the
-preparation report, enabled compositing, one shared HDRI/background file, unit
-product scale and zero pixel offsets. Percentage offsets remain supported.
-Unsupported combinations fail explicitly instead of substituting another input.
+preparation report, enabled compositing, unit product scale and zero pixel
+offsets. Percentage offsets remain supported. Unsupported combinations fail
+explicitly instead of substituting another input.
+
+The lighting environment and the backdrop may name different files. When they
+do, both are copied into the sealed payload — as `/input/environment_light.png`
+and `/input/environment.png` — and both are hashed into `inputs.json`, so
+neither can be swapped inside the probe. When they name the same file, exactly
+one image is staged as before, which is why the studio-dark anchor's payload and
+hashes did not move.
 
 ## Full-resolution render for appearance review
 
@@ -54,15 +72,15 @@ pixel. Judge appearance on the production render instead:
 ./.venv/Scripts/python.exe -m msp_render_cli run jobs/rl300_04_studio-white.json
 ```
 
-Rendered 2026-09-12 on the host Blender 5.1.1 (`b70da489d7f4`), HIP / AMD Radeon
+Rendered 2026-09-13 on the host Blender 5.1.1 (`b70da489d7f4`), HIP / AMD Radeon
 780M, 1800x1250 at 96 samples. The compositor's product fidelity gate passed at
-100% exact machine pixels, maximum pixel drift 0, frame coverage 39.3%.
+100% exact machine pixels, maximum pixel drift 0.
 
 | Full-resolution artifact | Decoded-pixel SHA-256 |
 |---|---|
-| `output/rl300_04_studio-white/beauty.png` | `dfbd1b7e5802645ec79e5dae16907f6c5679c1e2f37f858386dac01f6e0ccff8` |
-| `output/rl300_04_studio-white/mask.png` | `b250688b0b6ddcf76298a6267a9259807fe6ef5da2fcb6a52d68a55a6a00102e` |
-| `output/rl300_04_studio-white/final_rl300_04_studio-white.png` | `40f73b03d3c299e16b189010c19966217c1170f1c612e056fe825bee3ddebff6` |
+| `output/rl300_04_studio-white/beauty.png` | `caa82b377651529a322dad630389328231e8e8139096979f234436bea9d83afe` |
+| `output/rl300_04_studio-white/mask.png` | `f18f9720b59c18a9a63117cf3bfe4eec55caff6ad881eb6ca40b42ad798e7f71` |
+| `output/rl300_04_studio-white/final_rl300_04_studio-white.png` | `756ea9333c5d9115175c89856318109e2ccbeb90358ed5d4f8d660ff882832b8` |
 
 These are pixel digests, not file hashes — see the note on render metadata in
 [the parity record](rl300-parity.md#png-file-hashes-are-not-a-parity-comparator).
@@ -86,39 +104,77 @@ camera/lighting setup, so it is a visual benchmark, not a pixel-error target.
 At this full-machine framing, neither image resolves physical orange peel.
 Any owner acceptance of this white reference must be recorded separately.
 
-## September 12 proof
+## Bare metal: what was wrong and what changed
 
-Evidence: `output/verification/rl300-prepared-v1/parity-20260912-studio-white-v1/`.
-Status: `awaiting_reference_acceptance`, zero machine failures. Source-to-prepared
-structure has no differences; all four rendered masks match beauty alpha exactly.
-The missing-texture control blocks before rendering as intended.
+Recorded 2026-09-13, from Mark's review of the first full-resolution white
+render against two pump photographs of the same coupling family:
+`DD4-BACK-ISO-MSP.jpg` and `dd-6-side.jpg`.
 
-| Comparison | Mask IoU | Coverage delta | RGB MAE | RGB p99 | Result |
-|---|---|---|---|---|---|
-| Repeat | 1.0 | 0 | 0 | 0 | Pass |
-| Camera shift | 0.830559 | 0.018279 | 0.086845 | 0.574575 | Expected silhouette and RGB failures |
-| Material change | 0.921281 | 0.046414 | 0.237735 | 0.598545 | Expected RGB and silhouette failures |
+The fittings are four `Aluminum Cam and Groove Hose Coupling` meshes on
+`MSP_ALUMINUM_CAST`. Against the photographs they read as pale plastic. Four
+causes, in the order they mattered:
 
-The coverage includes the product and its shadow, so changing a material can
-legitimately change mask coverage too. The existing thresholds remain unchanged.
+1. **Nothing to reflect.** Covered above; this was most of the gap, and it is a
+   lighting fix rather than a material one.
+2. **One roughness across the whole part.** A real coupling puts a turned band
+   directly against a sandcast rim - semi-gloss beside visibly rough, inches
+   apart. That juxtaposition is most of what says "machined metal", and a single
+   value cannot produce it.
+3. **Bolts indistinguishable from the casting.** `MSP_STAINLESS_FASTENER` sat at
+   base 0.620 against the casting's 0.615, so the bright plated bolt heads that
+   carry the "real hardware" read in the photograph simply vanished.
+4. **Hardware shaded as a dielectric.** The CAD export put 27 zinc bolts and
+   washers, and all six Allegis latch paddles, on `MSP_PLASTIC` - metallic 0.0.
+   A plated bolt shaded as plastic is why fasteners looked like grey pips.
 
-| White reference artifact | SHA-256 |
+`photoreal.metal_finish` in the job answers all four. It rebuilds named metals
+with a base colour, a two-value roughness split driven by a large-scale noise
+mask, and an optional fine grain bump; and it carries `reassign` rules that move
+objects onto the material their hardware actually is, matched by name.
+
+Reassignment is per object and not per material on purpose: `MSP_PLASTIC` also
+covers 79 genuinely plastic parts, so the material is not what is wrong - the
+assignment is. A rule that matches nothing raises, because a silently dead rule
+is what a CAD re-export with renamed part numbers would produce. Counts in the
+log are objects, not slot writes; linked duplicates share mesh data, so one
+write can cover 27 objects.
+
+Tuning note for anyone revisiting the numbers: the split wants to be narrow.
+A wide split (0.20 against 0.52) mottles the barrel into something that reads as
+grime rather than casting, and at a fine `cast_scale` it reads as corrosion.
+`0.22` against `0.32` at scale 25 gives variety without dirt.
+
+Still absent, and visible against the DD4 photograph: anisotropy. These
+couplings are lathe-turned and the real highlight stretches around the barrel
+rather than sitting as a round spot. `metal_finish` accepts `anisotropy` and
+`anisotropy_axis` and wires a radial Tangent node, but no axis has been chosen
+here - a wrong axis streaks the highlight the wrong way, and the axis needs
+checking against the coupling's actual orientation first.
+
+## September 13 proof
+
+Evidence: `output/verification/rl300-prepared-v1/parity-20260913-studio-white-metal/`.
+Zero failures, `awaiting_reference_acceptance`, `repeat` pixel-identical, both
+negative controls failing on their own codes, missing-texture blocked before
+rendering. The payload carries seven inputs rather than six, the extra being
+`environment_light.png`.
+
+| White reference artifact | Decoded-pixel SHA-256 |
 |---|---|
-| `reference/beauty.png` | `889b4283475a0b7f63b951267d1398b4524a26a6212f6b73efe98afe2f0e9876` |
-| `reference/mask.png` | `c329089921160e356fadd4bb2020add884ef064cef6cba9849cc0110dedd07ca` |
-| `reference/composite.png` | `0fa7a804b9a54e36b271f7b4e0cc6f99ffe0cf3a8d762c56e3b59e04ddb08154` |
-| Authored plate | `2c91e7c9bcae779945c8f08f2179710fb865c5f969630c382c410a26f79dad1c` |
+| `reference/beauty.png` | `5ceb4ff186526162763adc329841c2c63b45851c6755f483f6d3f49b386debce` |
+| `reference/mask.png` | `0cb44b562ba185d2065e54ae9db8abc59b40e70b9fb6c453c29af9ba068afb03` |
+| `reference/composite.png` | `b09df19daa75927b5cb549dd625878f753a44ff69ceacb8e5874002bafe3f61c` |
 
-The plate regenerated byte-identically in a temporary directory. Production CLI
-preflight passed, and the full venv suite passed **55 tests in 53.220 seconds**.
-The white image is available for owner review; its `owner_accepted`, `g0_passed`
-and `cloud_authorized` flags remain false. Dark v6 retains its recorded acceptance.
+| Authored environment | File SHA-256 |
+|---|---|
+| `backgrounds/env_studio-white.png` | `2c91e7c9bcae779945c8f08f2179710fb865c5f969630c382c410a26f79dad1c` |
+| `backgrounds/env_studio-softbox.png` | `bf67d7ea04884ae229ccb42f7dc62e0f98e79ade2bc52bd9954d24d5ec1b2b4f` |
 
-The default-job regression at `parity-20260912-default-dark-regression/` also
-passed all five modes. Its decoded beauty, mask and composite are pixel-identical
-to the accepted v6 artifacts (maximum channel delta 0). Both new reference/repeat
-pairs have full-frame RGBA delta 0. An independent saved-artifact audit validated
-all three reports against the existing schema and rehashed all **126** inventory
-entries (42 per run), with zero mismatches. The original v6 report is unchanged.
-Audit script and result: `output/verification/rl300-prepared-v1/audit-20260912-studio-white.py`
-and `audit-20260912-studio-white.json` in the same directory.
+**The accepted dark v6 anchor is unaffected.** A default-job regression at
+`parity-20260913-dark-regression-metal/` passed all five modes, staged the same
+six payload inputs as before, and is pixel-identical to the accepted v6
+reference in beauty, mask and composite. The studio-dark job carries no
+`metal_finish` block, so none of this reaches it.
+
+The white image is not owner accepted; `owner_accepted`, `g0_passed` and
+`cloud_authorized` remain false.

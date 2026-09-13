@@ -70,13 +70,13 @@ def load_verification_job(job):
         return asset_path
 
     cad_source = asset("cad_source", "file_path")
+    # The lighting environment and the visible backdrop are allowed to be
+    # different files. They have to be: a backdrop wants a smooth featureless
+    # sweep, and bare metal needs softboxes and a dark side to reflect or it
+    # renders as pale plastic. Both are staged and hashed, so a job using two
+    # images is no less reproducible than one using the same file twice.
     environment = asset("lighting", "hdri_path")
     background_plate = asset("compositing", "background_plate")
-    if environment != background_plate:
-        raise ValueError(
-            "Verifier requires lighting.hdri_path and compositing.background_plate "
-            f"to reference the same file; got {environment} and {background_plate}"
-        )
     compositing = manifest.get("compositing", {})
     if compositing.get("enabled") is not True:
         raise ValueError("Verifier requires compositing.enabled to be true")
@@ -84,12 +84,12 @@ def load_verification_job(job):
         raise ValueError("Verifier requires compositing.product_scale to be 1.0")
     if compositing.get("product_offset_px", [0, 0]) != [0, 0]:
         raise ValueError("Verifier requires compositing.product_offset_px to be [0, 0]")
-    return manifest, cad_source, environment
+    return manifest, cad_source, environment, background_plate
 
 
 def stage_job_payload(output, prepared, source, job):
     """Copy a selected job and its declared image into the isolated probe payload."""
-    manifest, cad_source, environment = load_verification_job(job)
+    manifest, cad_source, environment, background_plate = load_verification_job(job)
     source = Path(source).resolve()
     if cad_source != source:
         raise ValueError(
@@ -98,12 +98,18 @@ def stage_job_payload(output, prepared, source, job):
         )
     payload = Path(output) / "payload"
     payload.mkdir()
-    for src, name in [(prepared, "prepared.blend"), (environment, "environment.png"),
-                      (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
-                      (Path(__file__), "verify_scene.py"), (ROOT / "render_worker.py", "render_worker.py")]:
+    staged = [(prepared, "prepared.blend"), (background_plate, "environment.png"),
+              (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
+              (Path(__file__), "verify_scene.py"), (ROOT / "render_worker.py", "render_worker.py")]
+    # One image stays one payload file, so a job whose backdrop also lights the
+    # scene stages exactly what it staged before and its hashes do not move.
+    lighting_name = "environment.png" if environment == background_plate else "environment_light.png"
+    if lighting_name != "environment.png":
+        staged.append((environment, lighting_name))
+    for src, name in staged:
         shutil.copyfile(src, payload / name)
     manifest["cad_source"]["file_path"] = "/input/prepared.blend"
-    manifest["lighting"]["hdri_path"] = "/input/environment.png"
+    manifest["lighting"]["hdri_path"] = f"/input/{lighting_name}"
     manifest["compositing"]["background_plate"] = "/input/environment.png"
     manifest["output"].update(width=900, height=625, samples=48, output_dir="/output")
     manifest["output"]["passes"] = {"beauty": True, "alpha_mask": True}
@@ -314,6 +320,10 @@ def blender_probe(mode):
             manifest["lighting"]["hdri_path"] = "/input/missing-environment.png"
         if not Path(manifest["lighting"]["hdri_path"]).is_file():
             raise ValueError("MISSING_DEPENDENCY: world_environment")
+        # The backdrop can be a second file now, and a job that lost it would
+        # otherwise reach the compositor before anything complained.
+        if not Path(manifest["compositing"]["background_plate"]).is_file():
+            raise ValueError("MISSING_DEPENDENCY: background_plate")
         import render_worker
 
         @persistent

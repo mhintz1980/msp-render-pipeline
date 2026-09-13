@@ -116,6 +116,14 @@ finish looks right. Each environment produces its own independent report.
    `compositing.background_plate` at the new file.
 3. `validate`, then `run`.
 
+The two paths may also differ, and for a clean studio they should. A backdrop
+wants a smooth featureless sweep; bare metal needs softboxes and a dark side to
+reflect, or it renders as pale plastic with no tonal range. `studio-white` does
+exactly this — it shows `env_studio-white.png` and lights with
+`env_studio-softbox.png`, an equirectangular map built by
+`scripts/build_studio_softbox_env.py`. Both images are staged and hashed by the
+verifier, so a job using two is no less reproducible than one using one twice.
+
 Seat the machine on the plate with `compositing.product_offset_pct` — a fraction of
 the canvas, so placement tuned on a fast low-resolution preview lands identically on
 the full-resolution final. Resize it with `camera.distance_multiplier` rather than
