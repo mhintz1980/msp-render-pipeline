@@ -3,7 +3,9 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 
 import numpy as np
@@ -239,11 +241,64 @@ class TestVerifierJob(unittest.TestCase):
             output.mkdir()
             prepared = Path(folder) / "prepared.blend"
             prepared.write_bytes(b"prepared fixture")
+            different_source = Path(folder) / "different.blend"
+            different_source.write_bytes(b"different source fixture")
 
             with self.assertRaisesRegex(ValueError, "does not match the preparation source"):
                 verify_scene.stage_job_payload(
-                    output, prepared, ROOT / "cad" / "different.blend", verify_scene.DEFAULT_JOB
+                    output, prepared, different_source, verify_scene.DEFAULT_JOB
                 )
+
+    def test_transparent_job_stages_without_composite_assets_or_source_path_identity(self):
+        """The transparent master needs neither an HDRI nor a plate."""
+        source = ROOT / "cad" / "RL300-SAFE-photoreal.blend"
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-transparent-") as folder:
+            job = Path(folder) / "transparent.json"
+            job_data = json.loads((ROOT / "jobs" / "rl300_01_no-background.json").read_text())
+            job_data["cad_source"]["file_path"] = str(source)
+            job.write_text(json.dumps(job_data), encoding="utf-8")
+            output = Path(folder) / "evidence"
+            output.mkdir()
+            prepared = Path(folder) / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
+
+            manifest, inputs = verify_scene.stage_job_payload(output, prepared, source, job)
+
+            payload = output / "payload"
+            staged = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["job_id"], "rl300_01_no-background")
+            self.assertIsNone(staged["lighting"]["hdri_path"])
+            self.assertIsNone(staged["compositing"]["background_plate"])
+            self.assertFalse(staged["compositing"]["enabled"])
+            self.assertFalse((payload / "environment.png").exists())
+            self.assertFalse((payload / "environment_light.png").exists())
+            self.assertNotIn("environment.png", inputs)
+            self.assertNotIn("environment_light.png", inputs)
+            provenance = staged["_verification_provenance"]
+            self.assertTrue(provenance["cad_source_bytes_match_preparation_source"])
+            self.assertEqual(provenance["job_cad_source_path"], provenance["preparation_source_path"])
+
+    def test_byte_identical_source_alias_is_accepted(self):
+        with tempfile.TemporaryDirectory(prefix="scene-verifier-source-alias-") as folder:
+            folder = Path(folder)
+            source = folder / "source.blend"
+            alias = folder / "alias.blend"
+            source.write_bytes(b"same source fixture")
+            alias.write_bytes(source.read_bytes())
+            job = json.loads((ROOT / "jobs" / "rl300_01_no-background.json").read_text())
+            job["cad_source"]["file_path"] = str(alias)
+            job_path = folder / "transparent-alias.json"
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            output = folder / "evidence"
+            output.mkdir()
+            prepared = folder / "prepared.blend"
+            prepared.write_bytes(b"prepared fixture")
+
+            verify_scene.stage_job_payload(output, prepared, source, job_path)
+
+            provenance = json.loads((output / "payload" / "manifest.json").read_text())["_verification_provenance"]
+            self.assertEqual(provenance["job_cad_source_path"], str(alias.resolve()))
+            self.assertEqual(provenance["preparation_source_path"], str(source.resolve()))
 
     def test_shared_image_stages_one_payload_file(self):
         """The dark anchor lights and backs itself with one file; its payload must not grow."""
@@ -290,6 +345,97 @@ class TestVerifierJob(unittest.TestCase):
             self.assertIn("environment.png", inputs)
             self.assertIn("environment_light.png", inputs)
             self.assertNotEqual(inputs["environment.png"], inputs["environment_light.png"])
+
+
+class TestSummaryCompositing(unittest.TestCase):
+    def _write_image(self, path):
+        image = np.zeros((32, 32, 4), dtype=np.uint8)
+        image[8:24, 8:24] = (96, 144, 192, 255)
+        Image.fromarray(image).save(path)
+
+    def _summary_inputs(self, folder, compositing_enabled):
+        output = Path(folder) / "evidence"
+        output.mkdir()
+        source = Path(folder) / "source.blend"
+        prepared = Path(folder) / "prepared.blend"
+        source.write_bytes(b"source")
+        prepared.write_bytes(b"prepared")
+        for mode in ("reference", "repeat", "camera_shift", "material_change"):
+            run = output / mode
+            run.mkdir()
+            self._write_image(run / "beauty.png")
+            self._write_image(run / "mask.png")
+            (run / "render-structure.json").write_text("{}", encoding="utf-8")
+        payload = output / "payload"
+        payload.mkdir()
+        if compositing_enabled:
+            self._write_image(payload / "environment.png")
+        runs = {
+            mode: {"exit_code": 0, "report": {"status": "rendered", "blockers": []}}
+            for mode in ("reference", "repeat", "camera_shift", "material_change")
+        }
+        runs["missing_texture"] = {"exit_code": 1, "report": {"status": "blocked", "blockers": ["MISSING_DEPENDENCY: world_environment"]}}
+        preparation = {
+            "source": {"path": str(source), "sha256": verify_scene.digest(source)},
+            "prepared": {"path": str(prepared), "sha256": verify_scene.digest(prepared)},
+        }
+        manifest = {
+            "compositing": {"enabled": compositing_enabled},
+            "lighting": {"shadow_catcher": False},
+            "output": {"passes": {"beauty": True, "alpha_mask": True}},
+            "_verification_provenance": {"cad_source_bytes_match_preparation_source": True},
+        }
+        return output, runs, preparation, manifest
+
+    def test_transparent_summary_skips_compositor_and_composite_profile_fields(self):
+        with tempfile.TemporaryDirectory(prefix="scene-summary-transparent-") as folder:
+            output, runs, preparation, manifest = self._summary_inputs(folder, compositing_enabled=False)
+            forbidden_compositor = types.SimpleNamespace(
+                MSPCompositor=types.SimpleNamespace(composite_asset=lambda *_args, **_kwargs: self.fail("compositor invoked"))
+            )
+            previous = sys.modules.get("composite_worker")
+            sys.modules["composite_worker"] = forbidden_compositor
+            try:
+                verify_scene.summarize(output, runs, {}, preparation, manifest)
+            finally:
+                if previous is None:
+                    del sys.modules["composite_worker"]
+                else:
+                    sys.modules["composite_worker"] = previous
+
+            profile = json.loads((output / "scene-parity-profile.json").read_text())
+            self.assertEqual(profile["compositing"], {"enabled": False})
+            self.assertEqual(profile["mask_semantics"]["coverage"], "product_only")
+            self.assertNotIn("reference_composite_sha256", profile)
+            self.assertNotIn("reference_composite_pixels_sha256", profile)
+            self.assertFalse((output / "reference" / "composite.png").exists())
+
+    def test_composited_summary_keeps_the_compositor_and_profile_hashes(self):
+        with tempfile.TemporaryDirectory(prefix="scene-summary-composite-") as folder:
+            output, runs, preparation, manifest = self._summary_inputs(folder, compositing_enabled=True)
+            calls = []
+
+            def composite_asset(beauty, _background, destination, **_settings):
+                calls.append(beauty)
+                Image.open(beauty).save(destination)
+
+            previous = sys.modules.get("composite_worker")
+            sys.modules["composite_worker"] = types.SimpleNamespace(
+                MSPCompositor=types.SimpleNamespace(composite_asset=composite_asset)
+            )
+            try:
+                verify_scene.summarize(output, runs, {}, preparation, manifest)
+            finally:
+                if previous is None:
+                    del sys.modules["composite_worker"]
+                else:
+                    sys.modules["composite_worker"] = previous
+
+            profile = json.loads((output / "scene-parity-profile.json").read_text())
+            self.assertEqual(calls, [str(output / "reference" / "beauty.png")])
+            self.assertEqual(profile["compositing"], {"enabled": True})
+            self.assertIsNotNone(profile["reference_composite_sha256"])
+            self.assertIsNotNone(profile["reference_composite_pixels_sha256"])
 
 
 class TestPixelDigest(unittest.TestCase):
