@@ -69,17 +69,32 @@ def load_verification_job(job):
             raise ValueError(f"Job manifest {section}.{key} does not exist: {asset_path}")
         return asset_path
 
+    def optional_asset(section, key):
+        block = manifest.get(section)
+        value = block.get(key) if isinstance(block, dict) else None
+        return None if value is None else asset(section, key)
+
     cad_source = asset("cad_source", "file_path")
     # The lighting environment and the visible backdrop are allowed to be
     # different files. They have to be: a backdrop wants a smooth featureless
     # sweep, and bare metal needs softboxes and a dark side to reflect or it
     # renders as pale plastic. Both are staged and hashed, so a job using two
     # images is no less reproducible than one using the same file twice.
-    environment = asset("lighting", "hdri_path")
-    background_plate = asset("compositing", "background_plate")
     compositing = manifest.get("compositing", {})
-    if compositing.get("enabled") is not True:
-        raise ValueError("Verifier requires compositing.enabled to be true")
+    if not isinstance(compositing, dict):
+        raise ValueError(f"Job manifest compositing must be an object: {path}")
+    if compositing.get("enabled") is True:
+        environment = asset("lighting", "hdri_path")
+        background_plate = asset("compositing", "background_plate")
+    elif compositing.get("enabled") is False:
+        # A transparent master render can be lit entirely by analytic lights.
+        # It must not smuggle an unused plate into a proof that claims no composite.
+        environment = optional_asset("lighting", "hdri_path")
+        background_plate = optional_asset("compositing", "background_plate")
+        if background_plate is not None:
+            raise ValueError("Non-composited verifier jobs require compositing.background_plate to be null")
+    else:
+        raise ValueError("Verifier requires compositing.enabled to be true or false")
     if compositing.get("product_scale", 1.0) != 1.0:
         raise ValueError("Verifier requires compositing.product_scale to be 1.0")
     if compositing.get("product_offset_px", [0, 0]) != [0, 0]:
@@ -92,25 +107,40 @@ def stage_job_payload(output, prepared, source, job):
     manifest, cad_source, environment, background_plate = load_verification_job(job)
     source = Path(source).resolve()
     if cad_source != source:
-        raise ValueError(
-            "Job manifest cad_source.file_path does not match the preparation source: "
-            f"{cad_source} != {source}"
-        )
+        try:
+            equivalent_source = digest(cad_source) == digest(source)
+        except OSError:
+            equivalent_source = False
+        if not equivalent_source:
+            raise ValueError(
+                "Job manifest cad_source.file_path does not match the preparation source: "
+                f"{cad_source} != {source}"
+            )
     payload = Path(output) / "payload"
     payload.mkdir()
-    staged = [(prepared, "prepared.blend"), (background_plate, "environment.png"),
-              (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
+    staged = [(prepared, "prepared.blend"), (ROOT / "scripts/prepare_scene.py", "prepare_scene.py"),
               (Path(__file__), "verify_scene.py"), (ROOT / "render_worker.py", "render_worker.py")]
     # One image stays one payload file, so a job whose backdrop also lights the
     # scene stages exactly what it staged before and its hashes do not move.
-    lighting_name = "environment.png" if environment == background_plate else "environment_light.png"
-    if lighting_name != "environment.png":
-        staged.append((environment, lighting_name))
+    lighting_name = None
+    if background_plate is not None:
+        staged.append((background_plate, "environment.png"))
+    if environment is not None:
+        lighting_name = "environment.png" if environment == background_plate else "environment_light.png"
+        if lighting_name != "environment.png":
+            staged.append((environment, lighting_name))
     for src, name in staged:
         shutil.copyfile(src, payload / name)
     manifest["cad_source"]["file_path"] = "/input/prepared.blend"
-    manifest["lighting"]["hdri_path"] = f"/input/{lighting_name}"
-    manifest["compositing"]["background_plate"] = "/input/environment.png"
+    if lighting_name is not None:
+        manifest["lighting"]["hdri_path"] = f"/input/{lighting_name}"
+    if background_plate is not None:
+        manifest["compositing"]["background_plate"] = "/input/environment.png"
+    manifest["_verification_provenance"] = {
+        "job_cad_source_path": str(cad_source),
+        "preparation_source_path": str(source),
+        "cad_source_bytes_match_preparation_source": True,
+    }
     manifest["output"].update(width=900, height=625, samples=48, output_dir="/output")
     manifest["output"]["passes"] = {"beauty": True, "alpha_mask": True}
     save(payload / "manifest.json", manifest)
@@ -318,11 +348,13 @@ def blender_probe(mode):
         manifest = json.loads(Path("/input/manifest.json").read_text())
         if mode == "missing_texture":
             manifest["lighting"]["hdri_path"] = "/input/missing-environment.png"
-        if not Path(manifest["lighting"]["hdri_path"]).is_file():
+        environment = manifest["lighting"].get("hdri_path")
+        if environment and not Path(environment).is_file():
             raise ValueError("MISSING_DEPENDENCY: world_environment")
         # The backdrop can be a second file now, and a job that lost it would
         # otherwise reach the compositor before anything complained.
-        if not Path(manifest["compositing"]["background_plate"]).is_file():
+        background_plate = manifest["compositing"].get("background_plate")
+        if manifest["compositing"].get("enabled") is True and not Path(background_plate).is_file():
             raise ValueError("MISSING_DEPENDENCY: background_plate")
         import render_worker
 
@@ -489,7 +521,8 @@ def summarize(output, runs, inputs, preparation, manifest):
         failures.append("SOURCE_CHANGED")
     if digest(Path(preparation["prepared"]["path"])) != preparation["prepared"]["sha256"]:
         failures.append("PREPARED_CHANGED")
-    if (output / "reference/beauty.png").exists():
+    compositing_enabled = manifest["compositing"].get("enabled") is True
+    if compositing_enabled and (output / "reference/beauty.png").exists():
         from composite_worker import MSPCompositor
         settings = {k: v for k, v in manifest["compositing"].items() if k not in ("enabled", "background_plate")}
         MSPCompositor.composite_asset(str(output / "reference/beauty.png"), str(output / "payload/environment.png"),
@@ -516,19 +549,24 @@ def summarize(output, runs, inputs, preparation, manifest):
         failures.extend(mode + ": " + failure for failure in check["failures"])
     profile = {"schema_version": 1, "status": "proposed_pending_owner", "limits": LIMITS,
                "encoding": "8-bit PNG, sRGB transfer inverse on AgX display-referred RGB; not scene-linear radiance",
-               "mask_semantics": {"artifact": "mask.png", "coverage": "product_plus_shadow",
-                   "visible_byte_threshold_exclusive": 8, "beauty_alpha_tolerance_bytes": 1,
-                   "rgb_region": "eroded jointly opaque beauty alpha"},
+               "mask_semantics": {"artifact": "mask.png", "coverage": "product_plus_shadow" if manifest["lighting"].get("shadow_catcher", False) else "product_only",
+                    "visible_byte_threshold_exclusive": 8, "beauty_alpha_tolerance_bytes": 1,
+                    "rgb_region": "eroded jointly opaque beauty alpha"},
+               "compositing": {"enabled": compositing_enabled},
+               "source_provenance": manifest.get("_verification_provenance"),
                "shadow_catcher": manifest["lighting"].get("shadow_catcher", False),
                "fixed_settings": manifest["output"], "seed": 0, "frame": 1, "device": "CPU",
                "reference_mask_sha256": digest(output / "reference/mask.png") if (output / "reference/mask.png").exists() else None,
-               "reference_composite_sha256": digest(output / "reference/composite.png") if (output / "reference/composite.png").exists() else None,
                "reference_sha256": digest(output / "reference/beauty.png") if (output / "reference/beauty.png").exists() else None,
                # Compare these across devices, not the file hashes above. See pixel_digest().
                "pixel_digest_semantics": "sha256 of PIL mode, size and decoded bytes; excludes PNG metadata",
-               "reference_mask_pixels_sha256": pixel_digest(output / "reference/mask.png"),
-               "reference_composite_pixels_sha256": pixel_digest(output / "reference/composite.png"),
-               "reference_pixels_sha256": pixel_digest(output / "reference/beauty.png")}
+                "reference_mask_pixels_sha256": pixel_digest(output / "reference/mask.png"),
+                "reference_pixels_sha256": pixel_digest(output / "reference/beauty.png")}
+    if compositing_enabled:
+        profile.update({
+            "reference_composite_sha256": digest(output / "reference/composite.png") if (output / "reference/composite.png").exists() else None,
+            "reference_composite_pixels_sha256": pixel_digest(output / "reference/composite.png"),
+        })
     save(output / "scene-parity-profile.json", profile)
     inventory = [{"path": p.relative_to(output).as_posix(), "sha256": digest(p), "size_bytes": p.stat().st_size}
                  for p in sorted(output.rglob("*")) if p.is_file() and p.name != "scene-parity-report.json"]
