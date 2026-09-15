@@ -10,7 +10,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BLENDER = Path(r"C:/Program Files/Blender Foundation/Blender 5.1/blender.exe")
+BLENDER = Path(os.environ.get("MSP_BLENDER_BIN")
+               or r"C:/Program Files/Blender Foundation/Blender 5.1/blender.exe")
 
 
 DRIVER = r'''

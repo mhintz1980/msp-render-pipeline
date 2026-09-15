@@ -1333,6 +1333,11 @@ def execute_render_job(manifest: Dict[str, Any]):
     # --- photorealism pass (bevel shading, light transport, colour, DOF) ---
     try:
         apply_photoreal_pass(scene, manifest, target=center)
+    except ValueError:
+        # A ValueError here is a manifest material error (reassign rule,
+        # metal_finish spec). Downgrading it to a warning would report a
+        # successful render over unfinished materials.
+        raise
     except Exception as e:
         print(f"[MSP Render] WARNING: photoreal pass failed: {e}")
 

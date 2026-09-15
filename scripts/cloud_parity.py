@@ -70,6 +70,13 @@ def preflight(reference):
         raise ValueError("RUNTIME_PIN_MISMATCH")
     if profile["limits"] != verifier.LIMITS:
         raise ValueError("FROZEN_LIMITS_MISMATCH")
+    if "reference_composite_pixels_sha256" not in profile:
+        # The profile carries the composite digest only for composited runs
+        # (verify_scene writes it iff compositing is enabled; older frozen
+        # profiles predate the explicit compositing flag but honor the same
+        # rule), and compare() needs reference/composite.png. Refuse such a
+        # reference up front instead of failing on the missing file mid-digest.
+        raise ValueError("COMPOSITING_DISABLED")
     for name, field in (("beauty", "reference_pixels_sha256"), ("mask", "reference_mask_pixels_sha256"),
                         ("composite", "reference_composite_pixels_sha256")):
         if verifier.pixel_digest(reference / "reference" / (name + ".png")) != profile[field]:

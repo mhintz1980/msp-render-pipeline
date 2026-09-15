@@ -47,7 +47,7 @@
   "allOf": [{
     "if": {"properties": {"status": {"const": "awaiting_reference_acceptance"}}},
     "then": {
-      "required": ["inputs", "runtime", "source_sha256", "prepared_sha256", "runs", "comparisons", "artifacts"],
+      "required": ["inputs", "runtime", "source_sha256", "prepared_sha256", "runs", "comparisons", "mask_checks", "artifacts"],
       "properties": {"failures": {"maxItems": 0}, "artifacts": {"minItems": 1},
         "runs": {"required": ["reference", "repeat", "camera_shift", "material_change", "missing_texture"]},
         "comparisons": {"required": ["source_to_prepared", "repeat", "camera_shift", "material_change"]}}

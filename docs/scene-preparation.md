@@ -1,6 +1,8 @@
 # Scene preparation — T01/T02
 
-This implements the `scene-prep` module in the approved [StudioMark plan](C:/vaults/markimus-SecondBrain/04-Projects/StudioMark-Pipeline/planning/2026-09-10/plan.md).
+This implements the `scene-prep` module in the approved StudioMark plan
+(Second Brain vault: `04-Projects/StudioMark-Pipeline/planning/2026-09-10/plan.md`;
+the plan is not committed to this repository).
 The operator supplies one curated `.blend`. The preparer must reject missing or unsupported
 dependencies, write a typed audit report, preserve the original bytes, and hash the saved
 prepared file. `prepared` means local packing succeeded; it does **not** mean G0 isolation,
