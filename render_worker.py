@@ -17,6 +17,7 @@ import os
 import json
 import math
 import glob
+import time
 from typing import Dict, Any, Tuple, Optional
 
 # Detect if running inside Blender
@@ -1108,6 +1109,7 @@ def write_matte_pass(output_dir: str):
 
 def execute_render_job(manifest: Dict[str, Any]):
     """Main execution function inside Blender."""
+    _t04_started = time.monotonic()
     cad_info = manifest["cad_source"]
     file_path = cad_info["file_path"]
     format_type = cad_info.get("format", "").lower()
@@ -1289,6 +1291,9 @@ def execute_render_job(manifest: Dict[str, Any]):
     output_dir = os.path.abspath(out_spec.get("output_dir", "./output"))
     os.makedirs(output_dir, exist_ok=True)
     scene.render.filepath = os.path.join(output_dir, "beauty.png")
+    require_gpu = manifest.get("require_gpu", False)
+    enabled_compute_devices = []
+    cpu_in_mix = scene.render.engine != "CYCLES"
 
     if scene.render.engine == "CYCLES":
         cycles = scene.cycles
@@ -1320,15 +1325,32 @@ def execute_render_job(manifest: Dict[str, Any]):
                     if _on:
                         for d in prefs.devices:
                             d.use = (d.type == _backend)
+                        enabled_compute_devices = [{"name": d.name, "type": d.type}
+                                                  for d in prefs.devices if d.use]
+                        cpu_in_mix = any(d.type == 'CPU' and d.use for d in prefs.devices)
                         print(f"[MSP Render] GPU backend {_backend}: "
                               f"{[d.name for d in _on]}")
                         break
                 except Exception:
                     continue
             else:
+                if require_gpu:
+                    raise RuntimeError("GPU_REQUIRED: no GPU device was enabled")
                 print('[MSP Render] WARNING: no GPU device enabled, rendering on CPU.')
-        except Exception:
+        except Exception as exc:
+            if require_gpu:
+                # The for-else raise above lands here too; re-wrapping it would
+                # emit "GPU_REQUIRED: GPU_REQUIRED: ...".
+                if isinstance(exc, RuntimeError) and str(exc).startswith("GPU_REQUIRED"):
+                    raise
+                raise RuntimeError(f"GPU_REQUIRED: {exc}") from exc
             pass
+
+    # No GPU device was enabled, so whatever the engine, this render is on the CPU.
+    # Reporting cpu_in_mix False here is exactly the silent-CPU-fallback dishonesty
+    # the require_gpu contract exists to remove.
+    if not enabled_compute_devices:
+        cpu_in_mix = True
 
     # --- photorealism pass (bevel shading, light transport, colour, DOF) ---
     try:
@@ -1342,11 +1364,39 @@ def execute_render_job(manifest: Dict[str, Any]):
         print(f"[MSP Render] WARNING: photoreal pass failed: {e}")
 
     print(f"[MSP Render] Starting render for job {manifest.get('job_id')}...")
+    _t04_render_started = time.monotonic()
     bpy.ops.render.render(write_still=True)
     print(f"[MSP Render] Beauty pass written: {scene.render.filepath}")
 
     if out_spec.get("passes", {}).get("alpha_mask", True):
         write_matte_pass(output_dir)
+
+    if "require_gpu" in manifest:
+        _t04_render_seconds = time.monotonic() - _t04_render_started
+        _t04_total_seconds = time.monotonic() - _t04_started
+        _t04_version = getattr(bpy.app, "version_string", ".".join(str(part) for part in bpy.app.version))
+        _t04_report = {
+            "compute": {
+                "enabled_devices": enabled_compute_devices,
+                "cpu_in_mix": cpu_in_mix,
+                # gpu_evidence is deliberately absent: the worker cannot sample
+                # nvidia-smi for itself. The dispatching harness supplies samples and
+                # _normalise_compute adjudicates them.
+            },
+            "runtime": {
+                "blender_version": _t04_version,
+                "image": os.environ.get("MSP_IMAGE_ID", "unknown"),
+                "build": getattr(bpy.app, "build_hash", None) or "unknown",
+            },
+            "timings": {
+                "prepare": max(0.0, _t04_render_started - _t04_started),
+                "render": max(0.0, _t04_render_seconds),
+                "total": max(0.0, _t04_total_seconds),
+            },
+        }
+        with open(os.path.join(output_dir, "render-report.json"), "w", encoding="utf-8") as _t04_report_file:
+            json.dump(_t04_report, _t04_report_file, sort_keys=True, allow_nan=False)
+            _t04_report_file.write("\n")
 
     print(f"[MSP Render] Render completed successfully. Output path: {output_dir}")
 
