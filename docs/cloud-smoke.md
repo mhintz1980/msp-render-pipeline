@@ -14,6 +14,25 @@ v12 dark anchor, plus a required-GPU failure control. This does not complete the
 approved plan's production T04 result contract, T05 compositor hardening, or T06
 shared CLI transport. The handoff uses “T04” more broadly for cloud parity.
 
+### Renewed authorization, 2026-09-15
+
+That bounded scope was spent by run `cloud-v12-l4-20260914-05`. On 2026-09-15
+Mark reopened it, verbatim: “msp-rendering-pipeline: continue moving forwards.
+i approve the current renderings and cloud work and modal work.”
+
+What this does and does not authorize:
+
+- **Does** authorize resuming the approved plan's production units — T04 result
+  contract, T05 compositor hardening, T06 shared CLI transport — and the cloud
+  and Modal work they lead to. T04/T05/T06 are local and cost nothing to run.
+- **Does not** supply a spend ceiling. T07's acceptance is explicitly
+  “price/limit approval before live call”, and no figure was named here. Bring
+  Mark a named per-run cost and a run count before the first T07 dispatch, and
+  record his answer here the way the 09-13 quotes are recorded.
+- `cloud_authorized` stays hardcoded false in verifier output by design. A human
+  authorization in this file is not a machine gate, and a passing cloud run does
+  not flip it.
+
 ## Execution bounds
 
 - One ephemeral Modal app, one L4, four physical CPU cores, 16 GiB RAM.
