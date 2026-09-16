@@ -18,7 +18,8 @@
 # 342.9 mm OD on a 149.22 mm bolt-circle radius, 136.53 mm long.
 #
 # Kept verbatim below as the authoritative record of what the fitting is
-# dimensioned to. Not run by the pipeline.
+# dimensioned to, and executed by regenerate_fitting() in
+# scripts/edit_rl300_geometry.py.
 """
 8" ANSI Class 150 Flange x 8" Male Camlock Adapter Geometry Generator
 Compatible with Blender 3.x, 4.x, and 5.x.

@@ -2,7 +2,8 @@
 
 > **Current acceptance (2026-09-13): v12 approved by Mark. T03 is complete.**
 > The studio-dark v12 proof is the accepted T04 reference for source
-> `115fd725…`. See the [v12 owner acceptance record](#2026-09-13--v12-owner-acceptance).
+> `115fd725…`. See the
+> [v12 owner acceptance record](#2026-09-13--v12-owner-acceptance-and-t03-complete).
 > The reference-acceptance blocker is closed, and with it the last open clause of
 > the T03 contract. G0 and cloud authorization remain separate and have not been
 > granted — `g0_passed` and `cloud_authorized` are hardcoded false in verifier
@@ -157,8 +158,9 @@ also runs on every rendered mode; tests invoke it rather than mirror its formula
 saved matte and raises `MATTE_DEGENERATE` or `MATTE_ALPHA_MISMATCH` rather than
 shipping a bad one, and the former blanket `except Exception` that swallowed
 matte failures is gone. `tests/test_matte_pass.py` drives the real writer inside
-Blender and asserts byte agreement with the beauty alpha; it skips when Blender
-is absent (`MSP_BLENDER_BIN` overrides the search).
+Blender and asserts byte agreement with the beauty alpha; it fails hard when the
+pinned Blender is absent rather than skipping - a silent skip would let a broken
+matte writer ship (`MSP_BLENDER_BIN` overrides the pinned path).
 
 **v3 measurements.** All four rendered modes: `mask.png` vs `beauty.png` alpha
 max byte difference **0**, 49 distinct mask values, coverage matching alpha
@@ -360,7 +362,9 @@ Fresh read-only review returned `ship` with no implementation blockers. The
 reviewer independently ran matte (8/8) and parity (15/15) tests and verified
 the saved hashes. Residual debt: `mask_checks` is emitted and validated when
 present, but is not required by the report schema; future independent producers
-must not rely on its omission being rejected. Product-plus-shadow coverage is
+must not rely on its omission being rejected. (Closed 2026-09-15: the schema
+now requires `mask_checks` on `awaiting_reference_acceptance` reports.)
+Product-plus-shadow coverage is
 still sensitive to the denoised shadow edge near mask byte 8. These are recorded
 for T04; thresholds and schema were not widened here.
 

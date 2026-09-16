@@ -144,12 +144,13 @@ A wide split (0.20 against 0.52) mottles the barrel into something that reads as
 grime rather than casting, and at a fine `cast_scale` it reads as corrosion.
 `0.22` against `0.32` at scale 25 gives variety without dirt.
 
-Still absent, and visible against the DD4 photograph: anisotropy. These
-couplings are lathe-turned and the real highlight stretches around the barrel
-rather than sitting as a round spot. `metal_finish` accepts `anisotropy` and
-`anisotropy_axis` and wires a radial Tangent node, but no axis has been chosen
-here - a wrong axis streaks the highlight the wrong way, and the axis needs
-checking against the coupling's actual orientation first.
+Anisotropy is set: `MSP_ALUMINUM_CAST_TURNED` carries `anisotropy: 0.4` with
+`anisotropy_axis: "Y"`. These couplings are lathe-turned and the real highlight
+stretches around the barrel rather than sitting as a round spot; `metal_finish`
+accepts `anisotropy` and `anisotropy_axis` and wires a radial Tangent node for
+it. The axis is measured, not guessed - these couplings revolve about local Y -
+and a wrong axis streaks the highlight the wrong way, so a new part's actual
+orientation still needs checking before an axis is chosen for it.
 
 ## September 13 proof
 

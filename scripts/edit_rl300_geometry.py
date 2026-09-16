@@ -448,7 +448,8 @@ def static_smooth_shading(mesh, angle_deg: float) -> dict:
 
 
 def strip_geometry_nodes(report: dict) -> None:
-    """Remove NODES modifiers, their node groups, and the libraries they pull in.
+    """Remove NODES modifiers, their geometry node groups, and the libraries
+    they pull in. Shader and compositor node groups are left untouched.
 
     Explicit and reviewable, for the same reason the embedded `Text` is removed
     here rather than by the preparer: dropping a dependency silently is how a
@@ -464,6 +465,13 @@ def strip_geometry_nodes(report: dict) -> None:
 
     removed_groups = []
     for group in list(bpy.data.node_groups):
+        # Only geometry trees are fair game. Shader and compositor node groups
+        # belong to materials and the compositor; removing one breaks shading
+        # on any replay whose CAD carries grouped materials. A geometry tree
+        # cannot be referenced by a retained shader/compositor tree, so this
+        # filter is also the still-in-use check.
+        if group.type != "GEOMETRY":
+            continue
         removed_groups.append(group.name)
         bpy.data.node_groups.remove(group)
 
