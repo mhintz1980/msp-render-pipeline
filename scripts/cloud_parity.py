@@ -15,18 +15,11 @@ import sys
 import time
 import uuid
 
+from msp_render_cli.remote_job import MIN_SOLO_GPU_MIB, gpu_process_evidence
+
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ("beauty.png", "mask.png", "reopened-structure.json", "render-structure.json",
              "probe-report.json", "compute-evidence.json", "blender.log")
-# In PID-namespaced containers nvidia-smi reports the compute app as PID 1 under
-# the init binary's name (e.g. "/bin/dumb-init"), so the process name cannot
-# identify Blender there. A sole compute app holding at least this much GPU
-# memory is accepted as Blender evidence: this payload's OptiX context holds
-# 814 MiB sustained (1.6 GiB peak during BVH build) and the headless container
-# runs no other GPU applications.
-MIN_SOLO_GPU_MIB = 256
-
-
 def sha(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -82,24 +75,6 @@ def preflight(reference):
         if verifier.pixel_digest(reference / "reference" / (name + ".png")) != profile[field]:
             raise ValueError("REFERENCE_PIXELS_MISMATCH: " + name)
     return report, profile
-
-
-def gpu_process_evidence(samples):
-    """True when a compute app is named blender, or when one sole compute app
-    held >= MIN_SOLO_GPU_MIB (the PID-namespace case; see MIN_SOLO_GPU_MIB)."""
-    pids, peak = set(), 0
-    for sample in samples:
-        for row in sample.get("processes", "").splitlines():
-            parts = [part.strip() for part in row.split(",")]
-            if len(parts) != 3:
-                continue
-            pid, name, memory = parts
-            if "blender" in name.lower():
-                return True
-            if pid and memory.isdigit():
-                pids.add(pid)
-                peak = max(peak, int(memory))
-    return len(pids) == 1 and peak >= MIN_SOLO_GPU_MIB
 
 
 def cloud_worker(request):
