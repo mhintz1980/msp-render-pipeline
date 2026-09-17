@@ -359,11 +359,16 @@ def _normalise_compute(compute: Mapping[str, Any]) -> dict[str, Any]:
                 if len(parts) == 3 and parts[2].isdigit():
                     memories.append(int(parts[2]))
         if memories:
+            # peak is the transient maximum (e.g. during BVH build); sustained
+            # is the level held across the whole window.
             peak = max(memories)
-            sustained = max(memories)
+            sustained = min(memories)
     return {
         "enabled_devices": enabled,
-        "cpu_in_mix": bool(compute.get("cpu_in_mix", any(device["type"] == "CPU" for device in enabled))),
+        # An empty enabled list is the silent CPU fallback: an omitted key must
+        # still report CPU in the mix, never a dishonest GPU-only mix.
+        "cpu_in_mix": bool(compute.get("cpu_in_mix", any(device["type"] == "CPU" for device in enabled)
+                                       if enabled else True)),
         "gpu_evidence": {
             "verdict": verdict,
             "samples": samples,

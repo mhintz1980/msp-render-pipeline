@@ -15,9 +15,13 @@ import sys
 import time
 import uuid
 
+# Direct invocation (`python scripts/cloud_parity.py`) puts scripts/, not the
+# repo root, on sys.path; the msp_render_cli import below needs the repo root.
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from msp_render_cli.remote_job import MIN_SOLO_GPU_MIB, gpu_process_evidence
 
-ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ("beauty.png", "mask.png", "reopened-structure.json", "render-structure.json",
              "probe-report.json", "compute-evidence.json", "blender.log")
 def sha(path):
@@ -163,7 +167,6 @@ def compare(reference, output):
         diffs[name] = verifier.structure_differences(json.loads((reference / "reference" / name).read_text()),
                                                     json.loads((candidate / name).read_text()))
     # Use the same compositor as T03, locally, with the exact frozen manifest settings.
-    sys.path.insert(0, str(ROOT))
     from composite_worker import MSPCompositor
     manifest = json.loads((reference / "payload/manifest.json").read_text())
     settings = {k: v for k, v in manifest["compositing"].items() if k not in ("enabled", "background_plate")}

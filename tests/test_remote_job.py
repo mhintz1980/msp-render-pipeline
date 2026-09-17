@@ -1,9 +1,13 @@
 import copy
 import hashlib
+import importlib
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 from msp_render_cli.remote_job import (
     ContractError,
@@ -15,6 +19,8 @@ from msp_render_cli.remote_job import (
     validate_request,
     validate_result,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class RemoteJobContractTests(unittest.TestCase):
@@ -181,6 +187,53 @@ class RemoteJobContractTests(unittest.TestCase):
             )
         self.assertEqual(result["failure_code"], "GPU_REQUIRED")
 
+    def test_empty_enabled_devices_without_key_report_cpu_in_mix(self):
+        # An empty enabled list is the silent CPU fallback; an omitted key must
+        # not be normalised into an honest-looking GPU-only mix.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_output(root)
+            result = build_result(
+                self.request(),
+                compute={"enabled_devices": []},
+                runtime={"version": "5.1.1", "image": "msp:observed", "build": "build-observed"},
+                timings={"prepare": 1, "render": 2, "total": 3},
+                output_dir=root,
+            )
+        self.assertIs(result["compute"]["cpu_in_mix"], True)
+
+    def test_explicit_cpu_in_mix_false_override_still_honored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_output(root)
+            result = build_result(
+                self.request(),
+                compute={"enabled_devices": [{"name": "NVIDIA L4", "type": "CUDA"}],
+                         "cpu_in_mix": False},
+                runtime={"version": "5.1.1", "image": "msp:observed", "build": "build-observed"},
+                timings={"prepare": 1, "render": 2, "total": 3},
+                output_dir=root,
+            )
+        self.assertIs(result["compute"]["cpu_in_mix"], False)
+
+    def test_sustained_is_window_minimum_and_peak_is_maximum(self):
+        # 814 MiB held across the window; 1.6 GiB seen only during BVH build.
+        samples = [{"seconds": 1.0, "processes": "1, /bin/dumb-init, 814"},
+                   {"seconds": 2.0, "processes": "1, /bin/dumb-init, 1660"}]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_output(root)
+            result = build_result(
+                self.request(require_gpu=True),
+                compute=self.compute(verdict=False, samples=samples),
+                runtime={"version": "5.1.1", "image": "msp:observed", "build": "build-observed"},
+                timings={"prepare": 1, "render": 2, "total": 3},
+                output_dir=root,
+            )
+        evidence = result["compute"]["gpu_evidence"]
+        self.assertEqual(evidence["peak_gpu_memory_mib"], 1660)
+        self.assertEqual(evidence["sustained_gpu_memory_mib"], 814)
+
     def test_missing_output_raises(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ContractError, "MISSING_OUTPUT"):
@@ -246,10 +299,6 @@ class RemoteJobContractTests(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RenderWorkerReportShape(unittest.TestCase):
     """render_worker.py writes render-report.json with no `gpu_evidence` key at all —
     it cannot sample nvidia-smi for itself. These pin the contract side of that."""
@@ -291,3 +340,99 @@ class RenderWorkerReportShape(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertTrue(validate_result(result))
         self.assertFalse(result["compute"]["gpu_evidence"]["verdict"])
+
+
+class _StubDevicePreferences:
+    """No backend exposes a device, so Cycles finds nothing to enable."""
+
+    def __init__(self):
+        self.compute_device_type = None
+        self.devices = []
+
+    def get_devices(self):
+        return []
+
+
+class RenderWorkerGpuRequiredTests(unittest.TestCase):
+    """execute_render_job normally runs inside Blender; against a stubbed bpy it
+    still exercises the GPU_REQUIRED raise and the render-report construction."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._module_state = {name: sys.modules.get(name) for name in ("bpy", "mathutils")}
+        scene = types.SimpleNamespace(
+            objects=[],
+            world=None,
+            render=types.SimpleNamespace(
+                engine="", filepath="", resolution_x=0, resolution_y=0,
+                film_transparent=False,
+                image_settings=types.SimpleNamespace(file_format="", color_mode="")),
+            cycles=types.SimpleNamespace(samples=0, use_denoising=False,
+                                         device="CPU", denoiser=None),
+        )
+        bpy_stub = types.SimpleNamespace(
+            context=types.SimpleNamespace(
+                scene=scene,
+                preferences=types.SimpleNamespace(
+                    addons={"cycles": types.SimpleNamespace(preferences=_StubDevicePreferences())})),
+            app=types.SimpleNamespace(version_string="5.1.1", build_hash="stub-build",
+                                      version=(5, 1, 1)),
+            ops=types.SimpleNamespace(
+                wm=types.SimpleNamespace(open_mainfile=lambda filepath: None)),
+            data=types.SimpleNamespace(objects=[]),
+        )
+        sys.modules["bpy"] = bpy_stub
+        sys.modules["mathutils"] = types.ModuleType("mathutils")
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        cls.render_worker = importlib.import_module("render_worker")
+
+    @classmethod
+    def tearDownClass(cls):
+        for name, module in cls._module_state.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def manifest(self, root, require_gpu):
+        blend = root / "fixture.blend"
+        blend.write_bytes(b"BLENDER" + b"\x00" * 24)
+        return {
+            "job_id": "render-worker-stub",
+            "cad_source": {"file_path": str(blend), "format": "blend"},
+            "camera": {"preset": "P1_FRONT_ISO"},
+            "livery": {"preset": "preserve_existing"},
+            "lighting": {"preset": "studio_dark"},
+            "output": {"engine": "CYCLES", "width": 8, "height": 8,
+                       "output_dir": str(root / "out")},
+            "require_gpu": require_gpu,
+        }
+
+    def test_require_gpu_without_enabled_gpu_raises_before_report_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self.manifest(root, require_gpu=True)
+            worker = self.render_worker
+            with patch.object(worker, "get_scene_bounds", lambda: (None, 1.0)), \
+                 patch.object(worker, "setup_camera", lambda *args, **kwargs: None), \
+                 patch.object(worker, "setup_lighting", lambda *args, **kwargs: None):
+                with self.assertRaises(RuntimeError) as ctx:
+                    worker.execute_render_job(manifest)
+            # The for-else raise must reach the caller with a single prefix, not
+            # the "GPU_REQUIRED: GPU_REQUIRED: ..." double-wrap.
+            message = str(ctx.exception)
+            self.assertTrue(message.startswith("GPU_REQUIRED"), message)
+            self.assertFalse(message.startswith("GPU_REQUIRED: GPU_REQUIRED"), message)
+            self.assertFalse((root / "out" / "render-report.json").exists())
+
+    def test_render_report_helper_with_no_gpu_devices_reports_cpu_in_mix(self):
+        report = self.render_worker._render_report([], True, 0.5, 2.0, 2.5)
+        self.assertEqual(report["compute"]["enabled_devices"], [])
+        self.assertIs(report["compute"]["cpu_in_mix"], True)
+        self.assertNotIn("gpu_evidence", report["compute"])
+        self.assertEqual(report["timings"], {"prepare": 0.5, "render": 2.0, "total": 2.5})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1107,6 +1107,32 @@ def write_matte_pass(output_dir: str):
         bpy.data.images.remove(img)
 
 
+def _render_report(enabled_compute_devices: list, cpu_in_mix: bool,
+                   prepare_seconds: float, render_seconds: float,
+                   total_seconds: float) -> Dict[str, Any]:
+    """The worker-side render report consumed by the remote-job contract."""
+    return {
+        "compute": {
+            "enabled_devices": enabled_compute_devices,
+            "cpu_in_mix": cpu_in_mix,
+            # gpu_evidence is deliberately absent: the worker cannot sample
+            # nvidia-smi for itself. The dispatching harness supplies samples and
+            # _normalise_compute adjudicates them.
+        },
+        "runtime": {
+            "blender_version": getattr(bpy.app, "version_string",
+                                       ".".join(str(part) for part in bpy.app.version)),
+            "image": os.environ.get("MSP_IMAGE_ID", "unknown"),
+            "build": getattr(bpy.app, "build_hash", None) or "unknown",
+        },
+        "timings": {
+            "prepare": max(0.0, prepare_seconds),
+            "render": max(0.0, render_seconds),
+            "total": max(0.0, total_seconds),
+        },
+    }
+
+
 def execute_render_job(manifest: Dict[str, Any]):
     """Main execution function inside Blender."""
     _t04_started = time.monotonic()
@@ -1374,26 +1400,9 @@ def execute_render_job(manifest: Dict[str, Any]):
     if "require_gpu" in manifest:
         _t04_render_seconds = time.monotonic() - _t04_render_started
         _t04_total_seconds = time.monotonic() - _t04_started
-        _t04_version = getattr(bpy.app, "version_string", ".".join(str(part) for part in bpy.app.version))
-        _t04_report = {
-            "compute": {
-                "enabled_devices": enabled_compute_devices,
-                "cpu_in_mix": cpu_in_mix,
-                # gpu_evidence is deliberately absent: the worker cannot sample
-                # nvidia-smi for itself. The dispatching harness supplies samples and
-                # _normalise_compute adjudicates them.
-            },
-            "runtime": {
-                "blender_version": _t04_version,
-                "image": os.environ.get("MSP_IMAGE_ID", "unknown"),
-                "build": getattr(bpy.app, "build_hash", None) or "unknown",
-            },
-            "timings": {
-                "prepare": max(0.0, _t04_render_started - _t04_started),
-                "render": max(0.0, _t04_render_seconds),
-                "total": max(0.0, _t04_total_seconds),
-            },
-        }
+        _t04_report = _render_report(enabled_compute_devices, cpu_in_mix,
+                                     _t04_render_started - _t04_started,
+                                     _t04_render_seconds, _t04_total_seconds)
         with open(os.path.join(output_dir, "render-report.json"), "w", encoding="utf-8") as _t04_report_file:
             json.dump(_t04_report, _t04_report_file, sort_keys=True, allow_nan=False)
             _t04_report_file.write("\n")
