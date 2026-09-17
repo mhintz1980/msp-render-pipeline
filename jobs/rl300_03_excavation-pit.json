@@ -13,11 +13,11 @@
     "focal_length_mm": 85.0,
     "elevation_deg": 11.0,
     "azimuth_deg": 42.0,
-    "distance_multiplier": 8.5,
+    "distance_multiplier": 5.6,
     "target_offset": [
       0.0,
       0.0,
-      0.92
+      0.85
     ],
     "depth_of_field": {
       "enabled": true,
@@ -96,7 +96,7 @@
     ],
     "product_offset_pct": [
       0.02,
-      0.11
+      0.0
     ]
   }
 }
