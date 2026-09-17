@@ -1055,3 +1055,25 @@ review returned fix-first with one verified blocker (`cloud_parity.py` direct
 invocation) plus honesty fixes in `_normalise_compute` — fixes applied same
 session (see `docs/remote-job-contract.md` and the test suite for the pinned
 behaviour).
+
+## 2026-09-17 — owner rulings: scale, backdrop semantics, video ahead
+
+Mark, shown both candidates side by side, ruled verbatim:
+
+- *"**'option A' is closer to the real size.**"* — candidate A's camera values
+  (`distance_multiplier` 5.6, `target_offset_z` 0.85, `product_offset_pct`
+  [0.02, 0.0]; mask fills 80.3% width / 92.3% height) stand as the job's
+  scale. This is a **scale ruling**, not a recorded reference acceptance —
+  the excavation-pit reports remain `awaiting_reference_acceptance`, and the
+  DD6 85.2%-width datum is retired as unattainable in this plate.
+- *"**the excavation pit is just a backdrop. I'll be using them from time to
+  time and wanted to see how it rendered.**"* — resolves the art-direction
+  vs literal-backdrop question open since 09-15: plates are *backdrops*,
+  used occasionally to see how the machine sits in an environment; they are
+  not deliverables to composite-match exactly. This reading also applies to
+  the sibling JGUN work.
+- *"**Eventually we should be getting into the video aspect of the pipeline
+  and if environments will play more of a factor.**"* — video is the next
+  frontier Mark intends; no task is scoped yet. When it is, expect
+  environment plates to matter more, which the backdrop ruling above should
+  inform.
