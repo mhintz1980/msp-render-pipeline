@@ -1004,3 +1004,54 @@ two bit-identical renders. See
 Any further edit that reaches `cad/RL300-SAFE-photoreal.blend` voids this
 acceptance the moment it lands — including a change to the CAD material
 corrections or the washer meshes, which now live in the source.
+
+## 2026-09-16 — excavation-pit scale fix (pending owner pick), T04 merged
+
+Mark rejected the 09-14 excavation-pit composite on scale: *"the pump is only a
+few feet long"* against the pit. The DD6 reference on the same plate
+(`C:/Projects/work-assets/Renderings/DD6-Rendering-jobsite.png`) fills **85.2%
+of frame width** (yellow-body profile, x[130,1185] of 1239); the rejected
+composite's mask fills **53.0%** (x[202,678] of 900).
+
+Scene measurement first (`output/scratch_measure_bbox.py`,
+`scratch_measure_extremes.py`, headless Blender, replicating the worker's
+all-MESH world-bounds rule): the visible product is **63.0 × 129.6 × 81.0 in**.
+The 129.6-in length is real product — `V2FTG-CAMLOCK-800AL` suction fittings
+set the front at −63.4 in, `G2RL200-SAF-2027` sets the rear at +66.3 in; the
+`hide_misplaced_isolators` rule hides only six z-min mounts (−2 in of height).
+Mark's 111-in figure matches the skid rails exactly (`V2RL300-FTS-2003/2004`:
+111.0 in); the shipped machine is longer than its skid. No worker defect; the
+camera is the right lever. `render_worker` computes bounds before hiding
+isolators — radius 1.6463 m either way, immaterial here.
+
+The handoff's 8.5→5.3 start (÷1.60) was rendered and measured: width 84.8%
+(on datum) but height 96.0% **clipping the frame bottom** — the RL300 is ~1.35×
+taller for its length than the DD6 (whose yellow band fills only 54.4% of
+height, ground contact ~79%), so a literal 85.2%-width placement cannot fit the
+frame at any vertical seating. This is the art-direction-vs-literal-backdrop
+question made concrete: this plate was shot for a smaller machine.
+
+Two unclipped candidates were rendered (900×625 parity profile, preparation
+`grounded-preparation-20260913-v12`, status `awaiting_reference_acceptance`,
+no failures):
+
+| Candidate | `distance_multiplier` | `target_offset_z` | `product_offset_pct` | width | height | composite ground line |
+|---|---|---|---|---|---|---|
+| A — `parity-20260916-v12-excavation-pit-scaleA3` | 5.6 | 0.85 | [0.02, 0.0] | 80.3% | 92.3% | 95.8% |
+| B — `parity-20260916-v12-excavation-pit-scaleB` | 5.9 | 0.85 | [0.02, 0.02] | 76.3% | 87.4% | 95.0% |
+
+`jobs/rl300_03_excavation-pit.json` is left at candidate A's values (matching
+the scaleA3 evidence). Intermediate runs `…-scale` and `…-scaleA`/`…-scaleA2`
+record the clipping iterations (dm 5.3 and 5.5 at aim 0.92 clip row 624; aim
+0.78 trades it for a row-1 top graze). **Awaiting Mark's A/B ruling**; neither
+is a recorded acceptance. The composites predate the T05 compositor gates; the
+parity path seats via product alpha, so the T05 mask fix does not alter them.
+
+Also this session: the ten pending scene-prep fixes were committed (`57c257e`,
+content identical to the T04 lane baseline `1d493d5`), the 09-15 renewal and
+handoff recorded (`717953d`), and T04 merged via `lane/t04-result-contract`
+(`f5b468a` → merge `18d4b2c`); merged suite 92 OK. A DeepSeek cross-vendor
+review returned fix-first with one verified blocker (`cloud_parity.py` direct
+invocation) plus honesty fixes in `_normalise_compute` — fixes applied same
+session (see `docs/remote-job-contract.md` and the test suite for the pinned
+behaviour).
