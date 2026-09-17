@@ -31,6 +31,15 @@ class MSPCompositor:
                 "composite. Check that the render actually produced geometry.")
         return bbox
 
+    @staticmethod
+    def _footprint_bbox(footprint: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """Returns (left, top, right, bottom) of a boolean footprint, or None."""
+        rows = np.flatnonzero(footprint.any(axis=1))
+        cols = np.flatnonzero(footprint.any(axis=0))
+        if rows.size == 0 or cols.size == 0:
+            return None
+        return (int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1)
+
     @classmethod
     def create_contact_shadow(
         cls,
@@ -170,6 +179,12 @@ class MSPCompositor:
         product_offset_pct expresses placement as a fraction of the canvas, so a
         composite tuned on a fast 800px preview lands identically on the 1800px
         final. It is added to product_offset_px.
+
+        Integrity is gated three ways and reported, never raised once the image
+        is on disk: pixel fidelity of the SAVED file, consistency of a supplied
+        mask with the seated product, and a size check on the reloaded output.
+        Any gate failing marks the result "failed" - the render itself stays
+        saved, because it was already paid for in GPU time.
         """
         if not os.path.exists(product_image_path):
             raise FileNotFoundError(f"Product image not found: {product_image_path}")
@@ -187,10 +202,19 @@ class MSPCompositor:
         prod_img = cls._place_product(prod_img, canvas_size, product_scale, offset)
         bg_img = ImageOps.fit(bg_img, canvas_size, Image.Resampling.LANCZOS)
 
-        if mask_image_path and os.path.exists(mask_image_path):
+        mask_file_supplied = bool(mask_image_path and os.path.exists(mask_image_path))
+        if mask_file_supplied:
             mask = Image.open(mask_image_path).convert("L")
             if mask.size != canvas_size:
                 mask = ImageOps.fit(mask, canvas_size, Image.Resampling.NEAREST)
+            # The mask must ride through the same placement transform as the
+            # product: pasting an offset product through an un-offset mask
+            # paints the leading edge with the plate and silently drops the
+            # trailing strip. An "L" channel cannot be pasted through itself,
+            # so carry it in the alpha band and take that channel back out.
+            mask_rgba = Image.merge("RGBA", (mask, mask, mask, mask))
+            mask = cls._place_product(
+                mask_rgba, canvas_size, product_scale, offset).split()[3]
         else:
             mask = prod_img.split()[3]
 
@@ -208,25 +232,82 @@ class MSPCompositor:
 
         output_image_path = cls._save_robustly(final_comp, output_image_path)
 
-        # --- Product Pixel Integrity Gate ---------------------------------------
-        prod_np = np.array(prod_img.convert("RGB"))
-        final_np = np.array(final_comp)
+        # From here on nothing may raise: the render is on disk and paid for,
+        # so every gate reports through the result dict instead.
+
+        # --- Product Pixel Integrity Gate, run on the SAVED file ---------------
+        # The gate has to inspect the bytes the client will open, not the
+        # in-memory composite - a save that silently degrades the file would
+        # otherwise sail through a gate run on the pixels we started with.
         # Only fully opaque pixels can be byte-exact: paste() alpha-blends
         # anything below 255, so a partially transparent antialiased edge pixel
-        # is *supposed* to pick up the plate behind it. Gating on >250 instead of
-        # ==255 reports a false failure on any render that has been rescaled.
-        mask_binary = np.array(mask) == 255
-        if mask_binary.any():
-            diff = np.abs(prod_np[mask_binary].astype(int) - final_np[mask_binary].astype(int))
-            max_diff, mean_diff = int(np.max(diff)), float(np.mean(diff))
-        else:
-            max_diff, mean_diff = 0, 0.0
+        # is *supposed* to pick up the plate behind it. Gating on >250 instead
+        # of ==255 reports a false failure on any render that has been rescaled.
+        prod_np = np.array(prod_img.convert("RGB"))
+        mask_np = np.array(mask)
+        mask_binary = mask_np == 255
+        fidelity_gate_pass = False
+        saved_check_pass = False
+        max_diff, mean_diff = 0, 0.0
+        try:
+            with Image.open(output_image_path) as reloaded_fh:
+                reloaded = reloaded_fh.convert("RGB")
+            if reloaded.size == final_comp.size:
+                reloaded_np = np.array(reloaded)
+                if mask_binary.any():
+                    diff = np.abs(prod_np[mask_binary].astype(int)
+                                  - reloaded_np[mask_binary].astype(int))
+                    max_diff, mean_diff = int(np.max(diff)), float(np.mean(diff))
+                    fidelity_gate_pass = max_diff == 0
+                # Zero opaque pixels: the gate measured nothing - a failure, not a pass.
+            saved_check_pass = fidelity_gate_pass and reloaded.size == final_comp.size
+        except Exception:
+            # A file that cannot be re-read is a failed check, not a lost render.
+            fidelity_gate_pass = saved_check_pass = False
+
+        # --- Mask Consistency Gate ---------------------------------------------
+        # A supplied mask that disagrees with the seated product means the paste
+        # painted plate pixels onto the machine or dropped a strip of it. The
+        # mask went through the exact placement transform, so a matching mask
+        # agrees bit for bit; antialiased edges differ legitimately, which is
+        # why agreement is measured on binary footprints with tolerance.
+        # With no mask file the gate never runs: mask_gate_pass stays None, and
+        # only a measured False counts as a failure downstream.
+        mask_gate_pass = None
+        if mask_file_supplied:
+            try:
+                prod_alpha = np.array(prod_img.split()[3])
+
+                def footprint_pairing(mask_fp, prod_fp):
+                    inter = int(np.count_nonzero(mask_fp & prod_fp))
+                    union = int(np.count_nonzero(mask_fp | prod_fp))
+                    iou = (inter / union) if union else 1.0
+                    mask_box = cls._footprint_bbox(mask_fp)
+                    prod_box = cls._footprint_bbox(prod_fp)
+                    if mask_box and prod_box:
+                        bbox_ok = all(abs(a - b) <= 2 for a, b in zip(mask_box, prod_box))
+                    else:
+                        bbox_ok = union == 0
+                    return bool(iou >= 0.98 and bbox_ok)
+
+                # A raw matte matches the alpha footprint exactly; a binarized
+                # matte matches the >=128 footprint; a misregistered mask fails both.
+                mask_gate_pass = (footprint_pairing(mask_np > 8, prod_alpha > 8)
+                                  or footprint_pairing(mask_np >= 128, prod_alpha >= 128))
+            except Exception:
+                mask_gate_pass = False
 
         left, top, right, bottom = cls._mask_bounds(mask)
+        # None means the mask gate did not run - only a measured False fails.
+        gates_ok = (fidelity_gate_pass and mask_gate_pass is not False
+                    and saved_check_pass)
         return {
             "output_path": output_image_path,
-            "status": "success",
-            "fidelity_gate_pass": max_diff == 0,
+            "saved_image_path": output_image_path,
+            "status": "success" if gates_ok else "failed",
+            "fidelity_gate_pass": fidelity_gate_pass,
+            "mask_gate_pass": mask_gate_pass,
+            "saved_check_pass": saved_check_pass,
             "max_pixel_drift": max_diff,
             "mean_pixel_drift": mean_diff,
             "dimensions": final_comp.size,

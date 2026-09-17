@@ -189,6 +189,55 @@ class TestMSPRenderPipeline(unittest.TestCase):
             self.assertEqual(res["dimensions"], (800, 600))
             self.assertTrue(res["fidelity_gate_pass"])
 
+    def test_composite_cli_exits_nonzero_when_any_gate_fails(self):
+        """cmd_composite must exit 1 on a failed gate, not just fidelity."""
+        import argparse
+        import io
+        import json
+        import unittest.mock as mock
+        from msp_render_cli import cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = create_default_manifest(
+                job_id="gate_fail", package_model="RL300_SAFE",
+                cad_path="dummy.glb", camera_preset="P1_FRONT_ISO",
+                livery_preset="msp_standard_yellow")
+            manifest_path = os.path.join(tmpdir, "job.json")
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f)
+
+            prod_path = os.path.join(tmpdir, "prod.png")
+            Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(prod_path)
+
+            failed = {
+                "output_path": os.path.join(tmpdir, "out.png"),
+                "saved_image_path": os.path.join(tmpdir, "out.png"),
+                "status": "failed",
+                "fidelity_gate_pass": True,
+                "mask_gate_pass": False,
+                "saved_check_pass": True,
+                "max_pixel_drift": 0,
+                "mean_pixel_drift": 0.0,
+                "dimensions": (20, 20),
+                "product_bbox": (0, 0, 20, 20),
+                "coverage_pct": 100.0,
+            }
+            args = argparse.Namespace(
+                manifest=manifest_path, product=prod_path,
+                background=os.path.join(tmpdir, "bg.png"),
+                output=os.path.join(tmpdir, "out.png"), shadow_opacity=None)
+
+            buf = io.StringIO()
+            with mock.patch.object(cli, "MSPCompositor") as comp_cls, \
+                    mock.patch("sys.stdout", buf):
+                comp_cls.composite_asset.return_value = failed
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.cmd_composite(args)
+
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertIn("Mask Consistency Gate", buf.getvalue())
+            self.assertIn("FAIL", buf.getvalue())
+
 
 class TestDemoManifests(unittest.TestCase):
     """The three manifests the demo actually runs must stay valid and complete."""

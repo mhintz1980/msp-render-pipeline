@@ -271,9 +271,17 @@ def cmd_composite(args):
     print(f"  - Dimensions:            {res['dimensions'][0]}x{res['dimensions'][1]}")
     print(f"  - Product Fidelity Gate: "
           f"{'PASS (100% exact machine pixels)' if res['fidelity_gate_pass'] else 'FAIL'}")
+    if res["mask_gate_pass"] is None:
+        mask_gate = "N/A (no mask file supplied)"
+    else:
+        mask_gate = ("PASS (mask seated with the product)"
+                     if res["mask_gate_pass"] else "FAIL")
+    print(f"  - Mask Consistency Gate: {mask_gate}")
+    print(f"  - Saved Image Check:     "
+          f"{'PASS (file re-read pixel-exact)' if res['saved_check_pass'] else 'FAIL'}")
     print(f"  - Max Pixel Drift:       {res['max_pixel_drift']}")
     print(f"  - Frame Coverage:        {res['coverage_pct']}%")
-    if not res["fidelity_gate_pass"]:
+    if res["status"] != "success":
         sys.exit(1)
 
 
