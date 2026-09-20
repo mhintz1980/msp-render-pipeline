@@ -84,7 +84,34 @@ def frame_manifest(manifest, azimuth_deg, container_output_dir):
     return frame
 
 
-def frame_plan(manifest_path, azimuths):
+def apply_overrides(manifest, overrides):
+    """Apply dotted-path=value overrides in place; unknown paths are errors.
+
+    Values parse as JSON when they can (numbers, booleans) and stay strings
+    otherwise (paths). A typo'd path must fail before a billable call, not
+    silently render the unmodified job.
+    """
+    for override in overrides or []:
+        path, sep, raw = override.partition("=")
+        if not sep or not path or not raw:
+            raise ValueError(f"BAD_OVERRIDE (expected path=value): {override}")
+        node = manifest
+        keys = path.split(".")
+        for key in keys[:-1]:
+            if not isinstance(node, dict) or key not in node:
+                raise ValueError(f"UNKNOWN_OVERRIDE_PATH: {path}")
+            node = node[key]
+        if not isinstance(node, dict) or keys[-1] not in node:
+            raise ValueError(f"UNKNOWN_OVERRIDE_PATH: {path}")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+        node[keys[-1]] = value
+    return manifest
+
+
+def frame_plan(manifest_path, azimuths, overrides=None):
     """Everything the dispatch needs: frames, container inputs, local inputs.
 
     Local inputs stay local on purpose: the composite runs on the workstation
@@ -93,6 +120,7 @@ def frame_plan(manifest_path, azimuths):
     """
     manifest_path = Path(manifest_path).resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    apply_overrides(manifest, overrides)
     hdri = manifest.get("lighting", {}).get("hdri_path")
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")
@@ -219,10 +247,14 @@ def main():
                         help="comma-separated camera azimuths; one Blender process per azimuth")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gpu", default="L4")
+    parser.add_argument("--set", action="append", default=[], dest="overrides",
+                        metavar="PATH=VALUE",
+                        help="manifest override, e.g. camera.depth_of_field.f_stop=3.2; "
+                             "may repeat; recorded in request.json")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     azimuths = [float(value) for value in str(args.azimuths).split(",") if value.strip()]
-    plan = frame_plan(args.manifest, azimuths)
+    plan = frame_plan(args.manifest, azimuths, args.overrides)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
 
@@ -240,6 +272,7 @@ def main():
         "frames": [{"frame": frame_name(f["camera"]["azimuth_deg"]),
                     "manifest": f"/input/manifest-{frame_name(f['camera']['azimuth_deg'])}.json"}
                    for f in plan["frames"]],
+        "overrides": list(args.overrides),
         "inputs": {dest: sha(path) for dest, path in
                    [(dest, Path(path)) for dest, path in plan["mounts"].items()]},
         "compositing_execution": "local",

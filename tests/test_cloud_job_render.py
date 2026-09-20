@@ -88,6 +88,39 @@ class PinTests(unittest.TestCase):
             self.assertEqual(module_value, frozen, constant)
 
 
+class OverrideTests(unittest.TestCase):
+    def test_nested_override_parses_numbers_and_keeps_paths_as_strings(self):
+        manifest = {"camera": {"depth_of_field": {"f_stop": 11.0}},
+                    "compositing": {"background_plate": "backgrounds/a.png",
+                                    "shadow_opacity": 0.0}}
+        cloud.apply_overrides(manifest, ["camera.depth_of_field.f_stop=3.2",
+                                         "compositing.shadow_opacity=0.35",
+                                         "compositing.background_plate=backgrounds/b.png",
+                                         "require_gpu=false"])
+        self.assertEqual(manifest["camera"]["depth_of_field"]["f_stop"], 3.2)
+        self.assertEqual(manifest["compositing"]["shadow_opacity"], 0.35)
+        self.assertEqual(manifest["compositing"]["background_plate"],
+                         "backgrounds/b.png")
+        self.assertIs(manifest["require_gpu"], False)
+
+    def test_unknown_or_malformed_override_fails_before_any_dispatch(self):
+        manifest = {"camera": {"azimuth_deg": 42.0}}
+        for bad in ("camera.f_stop=3.2", "camera", "=3.2", "camera.azimuth_deg="):
+            with self.assertRaises(ValueError):
+                cloud.apply_overrides(manifest, [bad])
+
+    def test_overrides_reach_the_frame_manifests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest, manifest_path = job_fixture(root)
+            plan = cloud.frame_plan(manifest_path, [42.0],
+                                    ["compositing.shadow_opacity=0.35"])
+            self.assertEqual(plan["compositing"]["shadow_opacity"], 0.35)
+            # The source job file on disk is untouched.
+            self.assertEqual(json.loads(manifest_path.read_text())["compositing"]
+                             ["shadow_opacity"], manifest["compositing"]["shadow_opacity"])
+
+
 class EstimateTests(unittest.TestCase):
     def test_estimate_is_one_cold_start_plus_frames_at_recorded_rates(self):
         per_second = (cloud.GPU_RATE_PER_S + 4 * cloud.CPU_RATE_PER_CORE_S
