@@ -133,14 +133,24 @@ def frame_plan(manifest_path, azimuths, overrides=None):
               cad_mount: manifest_path.parents[1] / manifest["cad_source"]["file_path"]}
     if hdri_mount:
         mounts[hdri_mount] = manifest_path.parents[1] / hdri
+    plate_path = str(manifest_path.parents[1] / plate) if plate else None
+    compositing = manifest.get("compositing", {})
+    # Every local input the dispatch and the local composite will open must
+    # exist now, before a billable call: a typo'd --set value must fail at
+    # plan time, not after the GPU has rendered a frame nothing can composite.
+    missing = [str(path) for path in mounts.values() if not Path(path).is_file()]
+    if plate_path and compositing.get("enabled") and not Path(plate_path).is_file():
+        missing.append(plate_path)
+    if missing:
+        raise ValueError("MISSING_INPUT: " + ", ".join(sorted(missing)))
     return {
         "job_id": manifest["job_id"],
         "manifest_path": str(manifest_path),
         "frames": frames,
         "cad_mount": cad_mount,
         "hdri_mount": hdri_mount,
-        "plate_path": str(manifest_path.parents[1] / plate) if plate else None,
-        "compositing": manifest.get("compositing", {}),
+        "plate_path": plate_path,
+        "compositing": compositing,
         "mounts": {dest: str(path) for dest, path in mounts.items()},
     }
 

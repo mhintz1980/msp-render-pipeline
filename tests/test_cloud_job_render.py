@@ -78,6 +78,18 @@ class FramePlanTests(unittest.TestCase):
             self.assertEqual(plan["compositing"]["product_offset_pct"], [0.0, -0.02])
 
 
+    def test_a_missing_local_input_fails_at_plan_time(self):
+        # A typo'd --set value (e.g. .json for the plate) must fail before a
+        # billable call, not after the GPU has rendered an uncompositable frame.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest, manifest_path = job_fixture(root)
+            (root / "backgrounds/env_white.png").unlink()
+            with self.assertRaisesRegex(ValueError, "MISSING_INPUT"):
+                cloud.frame_plan(manifest_path, [42.0],
+                                 ["compositing.background_plate=backgrounds/env_white.png"])
+
+
 class PinTests(unittest.TestCase):
     def test_runtime_pins_match_the_frozen_verifier(self):
         source = (ROOT / "scripts/verify_scene.py").read_text(encoding="utf-8")
