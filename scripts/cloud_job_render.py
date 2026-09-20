@@ -97,22 +97,23 @@ def frame_plan(manifest_path, azimuths):
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")
               for azimuth in azimuths]
-    mounts = {
-        "render_worker.py": ROOT / "render_worker.py",
-        Path(manifest["cad_source"]["file_path"]).name: manifest_path.parents[1]
-        / manifest["cad_source"]["file_path"],
-    }
-    if hdri:
-        mounts[Path(hdri).name] = manifest_path.parents[1] / hdri
+    # Container destinations must match the paths frame_manifest rewrites into
+    # the manifests; a mount anywhere else is a FileNotFoundError at 00:00.
+    cad_mount = "/input/cad/" + Path(manifest["cad_source"]["file_path"]).name
+    hdri_mount = f"/input/backgrounds/{Path(hdri).name}" if hdri else None
+    mounts = {"/input/render_worker.py": ROOT / "render_worker.py",
+              cad_mount: manifest_path.parents[1] / manifest["cad_source"]["file_path"]}
+    if hdri_mount:
+        mounts[hdri_mount] = manifest_path.parents[1] / hdri
     return {
         "job_id": manifest["job_id"],
         "manifest_path": str(manifest_path),
         "frames": frames,
-        "cad_mount": "/input/cad/" + Path(manifest["cad_source"]["file_path"]).name,
-        "hdri_mount": f"/input/backgrounds/{Path(hdri).name}" if hdri else None,
+        "cad_mount": cad_mount,
+        "hdri_mount": hdri_mount,
         "plate_path": str(manifest_path.parents[1] / plate) if plate else None,
         "compositing": manifest.get("compositing", {}),
-        "mounts": {name: str(path) for name, path in mounts.items()},
+        "mounts": {dest: str(path) for dest, path in mounts.items()},
     }
 
 
@@ -239,8 +240,8 @@ def main():
         "frames": [{"frame": frame_name(f["camera"]["azimuth_deg"]),
                     "manifest": f"/input/manifest-{frame_name(f['camera']['azimuth_deg'])}.json"}
                    for f in plan["frames"]],
-        "inputs": {name: sha(path) for name, path in
-                   [(name, Path(path)) for name, path in plan["mounts"].items()]},
+        "inputs": {dest: sha(path) for dest, path in
+                   [(dest, Path(path)) for dest, path in plan["mounts"].items()]},
         "compositing_execution": "local",
     }
     # Local-measured marginal render time (video-pipeline-brief.md section 3.1:
@@ -266,8 +267,8 @@ def main():
                            f"echo '{BLENDER_ARCHIVE_SHA256}  /tmp/blender.tar.xz' | sha256sum -c -",
                            "mkdir /opt/blender && tar -xf /tmp/blender.tar.xz -C /opt/blender --strip-components=1",
                            "rm /tmp/blender.tar.xz"))
-    for name, path in sorted(plan["mounts"].items()):
-        image = image.add_local_file(Path(path), "/input/" + name)
+    for dest, source in sorted(plan["mounts"].items()):
+        image = image.add_local_file(Path(source), dest)
     for frame in plan["frames"]:
         name = frame_name(frame["camera"]["azimuth_deg"])
         image = image.add_local_file(output / f"manifest-{name}.json", f"/input/manifest-{name}.json")

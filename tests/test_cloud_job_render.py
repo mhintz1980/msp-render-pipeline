@@ -63,8 +63,15 @@ class FramePlanTests(unittest.TestCase):
             self.assertEqual([f["camera"]["azimuth_deg"] for f in plan["frames"]],
                              [42.0, 222.0])
             # Worker, CAD and HDRI go to the container; the plate stays local.
-            self.assertEqual(plan["mounts"]["render_worker.py"],
+            # The mounts must carry exactly the container destinations the
+            # frame manifests reference - anything else is a FileNotFoundError
+            # at container start (the 2026-09-20 run2 failure).
+            self.assertEqual(plan["mounts"]["/input/render_worker.py"],
                              str(ROOT / "render_worker.py"))
+            self.assertEqual(plan["mounts"][plan["cad_mount"]],
+                             str(root / "cad/machine.blend"))
+            self.assertEqual(plan["mounts"][plan["hdri_mount"]],
+                             str(root / "backgrounds/env_softbox.png"))
             self.assertEqual(plan["cad_mount"], "/input/cad/machine.blend")
             self.assertEqual(plan["hdri_mount"], "/input/backgrounds/env_softbox.png")
             self.assertEqual(plan["plate_path"], str(root / "backgrounds/env_white.png"))
