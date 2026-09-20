@@ -203,3 +203,38 @@ per frame. Estimate **USD 0.13** at the local-measured marginal rate
 ceiling** if both frames pay full cold-process cost. The true L4 marginal
 rate is unknown until this run measures it (brief section 4.5), and that
 measurement is a stated purpose of the dispatch.
+
+### 2026-09-20 execution: preview passed, and the L4 pricing question closed
+
+Three dispatch attempts under the preview authorization. Attempt 1 failed at
+function hydration (Modal 1.5.1 pickles imported functions by reference;
+`msp_render_cli` was not in the image — no user code ran, no GPU time
+billed); fixed by evaluating GPU-process evidence locally from the returned
+samples. Attempt 2 (`...-run2`) failed in 4.4 s — CAD and HDRI were mounted
+flat at `/input/` while the manifests referenced `/input/cad/...`; fixed by
+keying mounts by container destination, with the invariant pinned by test.
+Attempt 3 (`output/preview-turntable-20260920-run3/`) **passed**:
+
+- Both frames rendered, exit 0, OptiX (`NVIDIA L4` sole enabled device),
+  GPU-process evidence true, all artifacts hashed and downloaded.
+- **The `render-report.json` bytes-build_hash fix (2026-09-17) is proven on
+  real cloud Blender**: valid report, `"build": "b70da489d7f4"` decoded,
+  enabled devices and timings recorded.
+- Measured wall: **frame az42 188.6 s** (cold container: includes Blender
+  startup and OptiX kernel compilation), **frame az222 11.4 s** (warm
+  container, same production settings: 1800 x 1250, 96 samples, OIDN, AgX).
+- **Warm marginal render cost is now measured, not bounded: ~10 s/frame** at
+  production settings (render phase 10.05 s). The video brief's 4.2 cost
+  bounds ($9.45-$24.09 per 300-frame shot) are retired by measurement:
+  300 warm frames at 10 s plus one cold start is about **USD 1.00 and
+  ~55 minutes of wall clock** on one L4, and the brief's 4.5 measurement
+  ask (one $0.372 run) was answered by this $0.07 run instead.
+- Two independent photorealism reads of the composited frames found the
+  render "borderline indistinguishable from photography" at web scale with
+  these watch-items: no visible depth of field at f/11 (a manifest knob,
+  not a pipeline gap), no directional floor shadow (`shadow_opacity: 0.0`
+  in this job's compositing block — a job setting), over-clean/outlier-free
+  metal and floor (no fingerprints, smudges, dust, scratches), a faintly
+  textured white plate backdrop, and soft edges where high-frequency
+  geometry meets the backdrop (a known composite limitation at AA depth).
+  All are recorded as T-V2 touch-up candidates, not defects of this render.

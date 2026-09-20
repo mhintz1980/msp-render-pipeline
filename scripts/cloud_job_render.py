@@ -46,7 +46,7 @@ CPU_RATE_PER_CORE_S = 0.0000131
 MEMORY_RATE_PER_GIB_S = 0.00000222
 COLD_START_SECONDS = 229.0  # measured fixed cost of the recorded L4 cold run
 
-FRAME_PREFIX = "frame-az"
+FRAME_PREFIX = "frame-"  # frame_name() already carries the "az"; joined: frame-az42
 
 
 def sha(path):
