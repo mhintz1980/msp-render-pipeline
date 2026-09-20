@@ -692,3 +692,29 @@ and the real saving is 10.8%.
 The general lesson, which is the same one `hide_misplaced_isolators` taught:
 **scene bounds mean different things before and after the scene is dressed.**
 Measure against the basis the worker actually used, not one re-derived later.
+
+---
+
+## 12. Decision record, 2026-09-20
+
+Mark decided, and it supersedes the local-first framing above:
+
+> *"no videos locally. Always in Modal. There is $30 per month free usage
+> and it's way faster. This laptop can't handle it well."*
+
+- The pick is **A, on Modal**: the turntable proof proceeds, with every frame
+  rendered in the cloud. Sections 3.4-3.5 (local shot budgets and the local
+  ceiling) are now historical measurement, not the plan; section 6.1's
+  per-frame process isolation carries over unchanged, and section 4.3's
+  batching analysis is promoted from optimization to core sequencer
+  constraint: batch ~30 frames per container or pay ~$21/shot in cold starts
+  against the $30/month ceiling.
+- The standing spend rule is satisfied at policy level by the $30/month
+  ceiling recorded in `docs/cloud-smoke.md` ("2026-09-20 authorization"),
+  with per-run estimates and measured seconds recorded per dispatch.
+- First dispatch under the ruling: a 2-frame environment preview
+  (`scripts/cloud_job_render.py`, azimuths 42 and 222 of the two-map
+  `studio-white` pattern) so Mark can judge photorealism before any
+  sequencer exists. The 222 frame doubles as the first evidence that the
+  two-map pattern holds the back-of-orbit lighting that section 6.2 measured
+  collapsing to 36/255 under a single plate.

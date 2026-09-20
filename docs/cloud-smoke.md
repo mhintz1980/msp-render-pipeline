@@ -165,3 +165,41 @@ This completes the authorized bounded experimental cloud parity proof of
 the frozen v12 dark anchor, including the required-GPU failure control. It
 does not complete the approved plan's production T04 result contract, T05
 compositor hardening, or T06 shared CLI transport.
+
+## 2026-09-20 authorization: Modal is the render platform
+
+Mark, 2026-09-20, verbatim: *"no videos locally. Always in Modal. There is
+$30 per month free usage and it's way faster. This laptop can't handle it
+well."*
+
+What this does and does not authorize:
+
+- **Does** make Modal the default platform for all render work - video frames
+  and preview frames alike. The local workstation is retired as a render
+  device (its 4.5% HIP crash rate and single-job wall clock are recorded in
+  `docs/video-pipeline-brief.md` sections 3.5 and 6.1).
+- **Does** name a recurring ceiling: USD 30 per month, the free-tier
+  allowance. Per-run cost estimates are recorded in each dispatch's
+  `request.json` (`cost_estimate_usd`), with measured seconds recorded after
+  the run so estimates converge on reality.
+- **Does not** flip `cloud_authorized` in verifier output; that flag stays
+  hardcoded false by design, exactly as the 09-13/09-15 entries state.
+
+This supersedes the video brief's "no cloud spend" T-V2 scope
+(`docs/video-pipeline-brief.md` section 9): the turntable proof renders on
+Modal, and the frame batching analysis in its section 4.3 becomes the
+sequencer's core constraint - batched frames per container, not one
+container per frame.
+
+### First dispatch under this authorization: turntable environment preview
+
+Recorded before dispatch, per the standing rule: **2 frames** of
+`jobs/rl300_04_studio-white.json` (the two-map turntable pattern), azimuths
+42 (the job's own framing) and 222 (the back-of-orbit sector where the
+single-plate defect measured median luminance 36/255), via
+`scripts/cloud_job_render.py`, one L4, 4 cores, 16 GiB, one Blender process
+per frame. Estimate **USD 0.13** at the local-measured marginal rate
+(101.65 s/frame, brief section 3.1) plus one 229 s cold start; **USD 0.60
+ceiling** if both frames pay full cold-process cost. The true L4 marginal
+rate is unknown until this run measures it (brief section 4.5), and that
+measurement is a stated purpose of the dispatch.

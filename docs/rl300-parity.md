@@ -1077,3 +1077,24 @@ Mark, shown both candidates side by side, ruled verbatim:
   frontier Mark intends; no task is scoped yet. When it is, expect
   environment plates to matter more, which the backdrop ruling above should
   inform.
+
+## 2026-09-20 — owner ruling: all rendering on Modal, video included
+
+Mark, 2026-09-20, verbatim: *"no videos locally. Always in Modal. There is
+$30 per month free usage and it's way faster. This laptop can't handle it
+well."*
+
+- Rendering — video frames and previews — moves to Modal as the default
+  platform. The workstation's role ends at scene preparation, dispatch, and
+  local compositing. Authorization and the USD 30/month ceiling are recorded
+  in `docs/cloud-smoke.md` ("2026-09-20 authorization").
+- This decides the T-V1 question (`docs/video-pipeline-brief.md` §10) as
+  **A on Modal**: the turntable proof proceeds, but its frames render in the
+  cloud. The brief's local-only T-V2 scope ("no cloud spend", §3.5 local
+  ceiling) is superseded; its §4.3 batching analysis becomes the sequencer's
+  core constraint.
+- Mark also asked for a preview: one rendered frame of the pump in the
+  turntable environment to judge photorealism, plus the list of post-video
+  touch-ups that could raise realism. The first preview dispatch (azimuths
+  42° and 222° of `jobs/rl300_04_studio-white.json`) is recorded in
+  `docs/cloud-smoke.md`.
