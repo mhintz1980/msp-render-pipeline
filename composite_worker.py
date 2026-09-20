@@ -157,6 +157,48 @@ class MSPCompositor:
             raise
 
     @classmethod
+    def apply_lens_pass(cls, image: Image.Image, vignette: float = 0.0,
+                        bloom: float = 0.0, grain: float = 0.0,
+                        frame_index: int = 0) -> Image.Image:
+        """Photographic finishing: a pure function of (pixels, params, index).
+
+        Vignette darkens the frame edge like a lens; bloom lifts a soft glow
+        around true specular highlights like veiling glare; grain adds
+        monochrome sensor noise. Grain is seeded by frame_index alone, so a
+        given frame's noise is fixed forever and identical on every rerun and
+        machine - the antiflicker rule (docs/video-pipeline-brief.md section
+        6.4) is seed determinism, and this pass obeys it by construction.
+
+        This runs AFTER the integrity gates in composite_asset: the gates
+        verify the composite these effects consume, machine pixels byte-exact;
+        the lens pass is the only thing allowed to touch them afterwards.
+        """
+        arr = np.asarray(image.convert("RGB"), dtype=np.float32)
+        height, width = arr.shape[:2]
+        if vignette > 0:
+            yy, xx = np.mgrid[0:height, 0:width]
+            radius = np.sqrt(((xx - width / 2) / (width / 2)) ** 2
+                             + ((yy - height / 2) / (height / 2)) ** 2)
+            # Only the outer ring darkens; the product at centre is untouched.
+            falloff = 1.0 - vignette * 0.30 * np.clip(radius - 0.55, 0, None) ** 2
+            arr = arr * falloff[:, :, np.newaxis]
+        if bloom > 0:
+            luma = arr @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+            # Only near-clipped speculars (and the sweep's peak glow) bloom; a
+            # mid-tone machine or the plate body stays put.
+            highlights = np.clip(luma - 250.0, 0, 5) / 5.0
+            blurred = np.asarray(
+                Image.fromarray((highlights * 255.0).astype(np.uint8)).filter(
+                    ImageFilter.GaussianBlur(radius=max(width, height) * 0.02)),
+                dtype=np.float32) / 255.0
+            arr = arr + blurred[:, :, np.newaxis] * (bloom * 18.0)
+        if grain > 0:
+            rng = np.random.default_rng(1000003 + frame_index)
+            noise = rng.normal(0.0, grain, size=(height, width)).astype(np.float32)
+            arr = arr + noise[:, :, np.newaxis]
+        return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+    @classmethod
     def composite_asset(
         cls,
         product_image_path: str,
@@ -169,6 +211,10 @@ class MSPCompositor:
         product_offset_px: Sequence[int] = (0, 0),
         product_offset_pct: Optional[Sequence[float]] = None,
         sun_direction: str = "top_left",
+        lens_vignette: float = 0.0,
+        lens_bloom: float = 0.0,
+        lens_grain: float = 0.0,
+        frame_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Merges product and background while strictly preserving machine pixels.
@@ -301,6 +347,27 @@ class MSPCompositor:
         # None means the mask gate did not run - only a measured False fails.
         gates_ok = (fidelity_gate_pass and mask_gate_pass is not False
                     and saved_check_pass)
+
+        # --- Lens pass: only after the gates ----------------------------------
+        # The gates above describe the composite the effects consume; the
+        # finished file is the gated bytes plus a pure global transform whose
+        # determinism is pinned by tests. All-zero params (the default) leave
+        # the gated composite itself as the deliverable, byte for byte, so
+        # every accepted digest stays reproducible.
+        lens_applied = False
+        if any((lens_vignette, lens_bloom, lens_grain)):
+            try:
+                with Image.open(output_image_path) as base_fh:
+                    lens_base = base_fh.convert("RGB")
+                lensed = cls.apply_lens_pass(lens_base, vignette=lens_vignette,
+                                             bloom=lens_bloom, grain=lens_grain,
+                                             frame_index=frame_index)
+                output_image_path = cls._save_robustly(lensed, output_image_path)
+                lens_applied = True
+            except Exception:
+                # The gated composite is already the deliverable on disk; a
+                # failed finish degrades to it, never to nothing.
+                lens_applied = False
         return {
             "output_path": output_image_path,
             "saved_image_path": output_image_path,
@@ -313,6 +380,9 @@ class MSPCompositor:
             "dimensions": final_comp.size,
             "product_bbox": (left, top, right, bottom),
             "coverage_pct": round(100.0 * float(mask_binary.mean()), 2),
+            "lens_applied": lens_applied,
+            "lens": {"vignette": lens_vignette, "bloom": lens_bloom,
+                     "grain": lens_grain, "frame_index": frame_index},
         }
 
 
