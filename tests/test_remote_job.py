@@ -375,7 +375,11 @@ class RenderWorkerGpuRequiredTests(unittest.TestCase):
                 scene=scene,
                 preferences=types.SimpleNamespace(
                     addons={"cycles": types.SimpleNamespace(preferences=_StubDevicePreferences())})),
-            app=types.SimpleNamespace(version_string="5.1.1", build_hash="stub-build",
+            # bytes, because that is what Blender hands back. The previous `str`
+            # stub was the only thing that ever exercised _render_report, which
+            # is why a TypeError on every real render slipped past 106 tests.
+            app=types.SimpleNamespace(version_string="5.1.1",
+                                      build_hash=b"b70da489d7f4",
                                       version=(5, 1, 1)),
             ops=types.SimpleNamespace(
                 wm=types.SimpleNamespace(open_mainfile=lambda filepath: None)),
@@ -394,6 +398,18 @@ class RenderWorkerGpuRequiredTests(unittest.TestCase):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+
+    def stub_render_op(self, worker):
+        """Give the shared bpy stub a no-op render operator for this test only.
+
+        The stub is built once in setUpClass, so assigning to it directly would
+        leak into every later test in the class.
+        """
+        patcher = patch.object(worker.bpy.ops, "render",
+                               types.SimpleNamespace(render=lambda **kwargs: None),
+                               create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def manifest(self, root, require_gpu):
         blend = root / "fixture.blend"
@@ -432,6 +448,66 @@ class RenderWorkerGpuRequiredTests(unittest.TestCase):
         self.assertIs(report["compute"]["cpu_in_mix"], True)
         self.assertNotIn("gpu_evidence", report["compute"])
         self.assertEqual(report["timings"], {"prepare": 0.5, "render": 2.0, "total": 2.5})
+
+    def test_render_report_is_json_serialisable_with_a_bytes_build_hash(self):
+        """Blender's bpy.app.build_hash is bytes. Undecoded it raised TypeError
+        mid-write and left render-report.json truncated at 158 bytes."""
+        report = self.render_worker._render_report([], True, 0.5, 2.0, 2.5)
+        self.assertEqual(report["runtime"]["build"], "b70da489d7f4")
+        self.assertIsInstance(report["runtime"]["build"], str)
+        # The exact call the worker makes. It must not raise.
+        payload = json.dumps(report, sort_keys=True, allow_nan=False)
+        self.assertEqual(json.loads(payload), report)
+
+    def test_written_render_report_round_trips_through_json_load(self):
+        """The file the dispatching harness opens must parse, not just the dict."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self.manifest(root, require_gpu=False)
+            worker = self.render_worker
+            with patch.object(worker, "get_scene_bounds", lambda: (None, 1.0)), \
+                 patch.object(worker, "setup_camera", lambda *args, **kwargs: None), \
+                 patch.object(worker, "setup_lighting", lambda *args, **kwargs: None), \
+                 patch.object(worker, "apply_photoreal_pass", lambda *a, **k: None), \
+                 patch.object(worker, "write_matte_pass", lambda *a, **k: None):
+                self.stub_render_op(worker)
+                worker.execute_render_job(manifest)
+
+            written = root / "out" / "render-report.json"
+            self.assertTrue(written.is_file(), "no render-report.json was written")
+            loaded = json.loads(written.read_text(encoding="utf-8"))
+            self.assertEqual(loaded["runtime"]["build"], "b70da489d7f4")
+            self.assertEqual(loaded["runtime"]["blender_version"], "5.1.1")
+            self.assertIn("timings", loaded)
+
+    def test_build_hash_text_tolerates_str_and_missing_values(self):
+        decode = self.render_worker._build_hash_text
+        self.assertEqual(decode(b"b70da489d7f4"), "b70da489d7f4")
+        self.assertEqual(decode("already-text"), "already-text")
+        self.assertEqual(decode(None), "unknown")
+        self.assertEqual(decode(b""), "unknown")
+
+    def test_an_unserialisable_report_leaves_no_truncated_file(self):
+        """The original defect wrote 158 valid bytes and then raised. A partial
+        report is worse than none: _collect_artifacts excludes render-report.json
+        from artifact hashing, so nothing downstream would catch the truncation."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self.manifest(root, require_gpu=False)
+            worker = self.render_worker
+            poisoned = dict(worker._render_report([], True, 0.5, 2.0, 2.5))
+            poisoned["runtime"] = {"build": object()}  # not JSON-serialisable
+            with patch.object(worker, "get_scene_bounds", lambda: (None, 1.0)), \
+                 patch.object(worker, "setup_camera", lambda *args, **kwargs: None), \
+                 patch.object(worker, "setup_lighting", lambda *args, **kwargs: None), \
+                 patch.object(worker, "apply_photoreal_pass", lambda *a, **k: None), \
+                 patch.object(worker, "write_matte_pass", lambda *a, **k: None), \
+                 patch.object(worker, "_render_report", lambda *a, **k: poisoned):
+                self.stub_render_op(worker)
+                with self.assertRaises(TypeError):
+                    worker.execute_render_job(manifest)
+            # It must fail loudly AND leave nothing corrupt behind.
+            self.assertFalse((root / "out" / "render-report.json").exists())
 
 
 if __name__ == "__main__":

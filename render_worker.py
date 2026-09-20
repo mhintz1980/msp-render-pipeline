@@ -1107,6 +1107,24 @@ def write_matte_pass(output_dir: str):
         bpy.data.images.remove(img)
 
 
+def _build_hash_text(value: Any, default: str = "unknown") -> str:
+    """`bpy.app.build_hash` is **bytes** in Blender, and json cannot serialise it.
+
+    Left undecoded, `json.dump` raised TypeError partway through writing
+    `render-report.json`, which landed truncated at 158 bytes - mid-key at
+    `"build": ` - and aborted the job after a perfectly good render. Every other
+    caller in the repo already decodes (`scripts/cloud_blender_probe.py`,
+    `scripts/prepare_scene.py`, `scripts/verify_scene.py`); this one did not, and
+    the unit stub handed it a `str`, so no test could see it.
+
+    A str passes through unchanged so the stubbed-bpy tests and any future
+    Blender that hands back text both keep working.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("ascii", "replace")
+    return value or default
+
+
 def _render_report(enabled_compute_devices: list, cpu_in_mix: bool,
                    prepare_seconds: float, render_seconds: float,
                    total_seconds: float) -> Dict[str, Any]:
@@ -1123,7 +1141,7 @@ def _render_report(enabled_compute_devices: list, cpu_in_mix: bool,
             "blender_version": getattr(bpy.app, "version_string",
                                        ".".join(str(part) for part in bpy.app.version)),
             "image": os.environ.get("MSP_IMAGE_ID", "unknown"),
-            "build": getattr(bpy.app, "build_hash", None) or "unknown",
+            "build": _build_hash_text(getattr(bpy.app, "build_hash", None)),
         },
         "timings": {
             "prepare": max(0.0, prepare_seconds),
@@ -1403,9 +1421,16 @@ def execute_render_job(manifest: Dict[str, Any]):
         _t04_report = _render_report(enabled_compute_devices, cpu_in_mix,
                                      _t04_render_started - _t04_started,
                                      _t04_render_seconds, _t04_total_seconds)
+        # Serialise fully before opening the file. Streaming straight into the
+        # handle means an unserialisable value writes bytes up to the point it
+        # fails and leaves a truncated, invalid report on disk - which
+        # `_collect_artifacts` deliberately excludes from artifact hashing, so
+        # nothing downstream would catch it. A failure here still raises: a job
+        # that renders without recording what rendered it is exactly the silent
+        # dishonesty the T04 contract exists to remove.
+        _t04_payload = json.dumps(_t04_report, sort_keys=True, allow_nan=False) + "\n"
         with open(os.path.join(output_dir, "render-report.json"), "w", encoding="utf-8") as _t04_report_file:
-            json.dump(_t04_report, _t04_report_file, sort_keys=True, allow_nan=False)
-            _t04_report_file.write("\n")
+            _t04_report_file.write(_t04_payload)
 
     print(f"[MSP Render] Render completed successfully. Output path: {output_dir}")
 
