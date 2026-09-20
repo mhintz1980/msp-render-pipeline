@@ -264,3 +264,34 @@ sha256-verified). Passed, both frames, OptiX evidence true.
 - Two dispatcher guards landed along the way: `--set` rejects unknown paths
   (a typo must fail locally, not render the unmodified job), and frame_plan
   rejects missing local inputs before any billable call.
+
+### 2026-09-20 batch-2: 30-frame orbit probe, all sequence gates pass
+
+`output/preview-turntable-batch2-20260920/` - 30 frames, azimuths 42..390
+step 12 (one full orbit), same kept batch-1 look, one warm container after a
+single cold start. All 30 rendered, exit 0, OptiX evidence true per frame.
+`scripts/probe_sequence.py` then composited every frame through the T05
+gates (all pass, machine pixels byte-exact on every frame), applied the new
+lens pass (vignette 0.45 / bloom 0.3 / grain 2.2, per-frame seed), and
+encoded the first motion artifact, `turntable-loop.mp4` (H.264 crf 18,
+12 fps, looped).
+
+- **Declared gates, all measured, none widened:** no flicker outlier frame
+  (max frame MAE 28.1 vs median 21.4, under the 3x neighbour factor); no
+  duplicate consecutive digests; uniform azimuth steps; decode-back PSNR
+  39.59/40.40/39.60 dB on first/mid/last against the declared 35 dB floor;
+  grain determinism proven adversarially (a rerun of the mid frame
+  reproduced the delivered bytes' sha256 exactly).
+- Section 7.4 scalars recorded for the first time at 12 deg/frame: max
+  second difference - coverage 0.063, mean interior luma 13.0, p95 39.0.
+  These are MEASUREMENTS, not yet gates; their thresholds get declared in
+  the T-V2 manifest when the step is 1.2 deg, not retrofitted from a 12 deg
+  probe.
+- Independent vision read of the lensed frame: vignette subtle, bloom
+  visible on the hottest metal highlights, fine grain present - "real
+  optics" character, no banding or artifacts. Grain judged the single most
+  effective realism lever of the three.
+- Cost: estimate USD 1.0161 recorded pre-dispatch (still priced at the
+  stale 101.65 s/frame local figure); measured container time will be
+  recorded from Modal's usage when it settles - the warm rate is now well
+  known (~10.2 s/frame), so the true figure is near USD 0.18.
