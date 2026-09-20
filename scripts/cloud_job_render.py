@@ -30,11 +30,9 @@ import time
 import uuid
 
 # Direct invocation (`python scripts/cloud_job_render.py`) puts scripts/, not
-# the repo root, on sys.path; the msp_render_cli import below needs the root.
+# the repo root, on sys.path; msp_render_cli is imported locally in main().
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from msp_render_cli.remote_job import gpu_process_evidence
 
 # Must match scripts/verify_scene.py lines 21-23 (asserted by
 # tests/test_cloud_job_render.py). Same archive the v12 cloud proof pinned.
@@ -181,10 +179,11 @@ def cloud_worker(request):
     finally:
         stop.set()
     result["seconds"] = round(time.monotonic() - started, 3)
-    result["blender_gpu_process_seen"] = gpu_process_evidence(result["gpu_process_samples"])
-    if not result["blender_gpu_process_seen"]:
-        result["failures"].append("NO_BLENDER_GPU_PROCESS_EVIDENCE")
-        result["status"] = "failed"
+    # GPU-process evidence is evaluated locally in main(), not here: Modal's
+    # serializer (1.5.1) pickles imported functions by reference, so calling
+    # msp_render_cli inside the function makes hydration fail with
+    # ModuleNotFoundError in a container that cannot contain the module. The
+    # samples below are the evidence; they are plain JSON.
     files_out = {}
     if result["status"] == "rendered":
         for name in result["artifacts"]:
@@ -258,6 +257,7 @@ def main():
         return 0
 
     import modal
+    from msp_render_cli.remote_job import gpu_process_evidence
     image = (modal.Image.debian_slim(python_version=f"{sys.version_info.major}.{sys.version_info.minor}")
              .apt_install("wget", "xz-utils", "libglu1-mesa", "libxi6", "libxrender1", "libxfixes3",
                           "libxcursor1", "libxinerama1", "libxkbcommon0", "libsm6", "libxxf86vm1",
@@ -284,6 +284,11 @@ def main():
                 result, files = worker.remote(frame_request)
                 if result["request_id"] != frame_request["request_id"]:
                     raise ValueError("RESULT_IDENTITY_MISMATCH: " + frame["frame"])
+                result["blender_gpu_process_seen"] = gpu_process_evidence(
+                    result["gpu_process_samples"])
+                if not result["blender_gpu_process_seen"]:
+                    result["failures"].append("NO_BLENDER_GPU_PROCESS_EVIDENCE")
+                    result["status"] = "failed"
                 save(output / f"result-{frame['frame']}.json", result)
                 for name, content in files.items():
                     known = result["artifacts"].get(name)
