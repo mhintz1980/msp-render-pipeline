@@ -238,3 +238,29 @@ Attempt 3 (`output/preview-turntable-20260920-run3/`) **passed**:
   textured white plate backdrop, and soft edges where high-frequency
   geometry meets the backdrop (a known composite limitation at AA depth).
   All are recorded as T-V2 touch-up candidates, not defects of this render.
+
+### 2026-09-20 batch-1 preview: touch-ups verified, DOF cost measured
+
+`output/preview-turntable-batch1-20260920/` - same two azimuths as run3,
+with three taste overrides applied via the new `--set` machinery (source
+job file untouched, overrides recorded in `request.json`): DOF f/11 -> f/3.2
+(`camera.depth_of_field.f_stop`), contact shadow on
+(`compositing.shadow_opacity` 0 -> 0.35), deepened sweep plate
+(`backgrounds/env_studio-white-v2.png`, floor-darkening 16 + vignette 0.8;
+builder defaults regenerate the accepted plate byte-identically,
+sha256-verified). Passed, both frames, OptiX evidence true.
+
+- **Measured DOF cost: warm marginal 10.2 s vs 10.05 s baseline (+1.5%)** -
+  effectively free, resolving the touch-up table's 0-20% estimate. The cold
+  frame's +52 s (184.2 -> 236.0 s) is one-time OptiX kernel compilation for
+  the DOF variant; at 30 frames/container it amortizes to ~USD 0.05/shot.
+- Independent vision read verifies all three effects: graduated front-sharp/
+  rear-soft focus across the machine, a plausible anchoring shadow (tiny
+  brightness halo at the left skid rail worth re-checking in motion), and a
+  visible bottom/corner falloff in the sweep. New caveat: the machine-to-
+  backdrop boundary now reads slightly sharper than the machine's own DOF
+  gradient - the known composite limitation the real-floor touch-up (batch
+  3) exists to remove.
+- Two dispatcher guards landed along the way: `--set` rejects unknown paths
+  (a typo must fail locally, not render the unmodified job), and frame_plan
+  rejects missing local inputs before any billable call.
