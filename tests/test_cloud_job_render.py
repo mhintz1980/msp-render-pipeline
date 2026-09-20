@@ -92,7 +92,8 @@ class OverrideTests(unittest.TestCase):
     def test_nested_override_parses_numbers_and_keeps_paths_as_strings(self):
         manifest = {"camera": {"depth_of_field": {"f_stop": 11.0}},
                     "compositing": {"background_plate": "backgrounds/a.png",
-                                    "shadow_opacity": 0.0}}
+                                    "shadow_opacity": 0.0},
+                    "require_gpu": True}
         cloud.apply_overrides(manifest, ["camera.depth_of_field.f_stop=3.2",
                                          "compositing.shadow_opacity=0.35",
                                          "compositing.background_plate=backgrounds/b.png",
@@ -102,6 +103,13 @@ class OverrideTests(unittest.TestCase):
         self.assertEqual(manifest["compositing"]["background_plate"],
                          "backgrounds/b.png")
         self.assertIs(manifest["require_gpu"], False)
+
+    def test_a_key_the_manifest_does_not_have_is_rejected(self):
+        # Strict on purpose: a typo'd --set must fail locally, not silently
+        # render the unmodified job on a billable GPU.
+        manifest = {"camera": {"azimuth_deg": 42.0}}
+        with self.assertRaisesRegex(ValueError, "UNKNOWN_OVERRIDE_PATH"):
+            cloud.apply_overrides(manifest, ["require_gpu=false"])
 
     def test_unknown_or_malformed_override_fails_before_any_dispatch(self):
         manifest = {"camera": {"azimuth_deg": 42.0}}
