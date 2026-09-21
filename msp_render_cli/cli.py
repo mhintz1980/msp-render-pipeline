@@ -20,7 +20,7 @@ from typing import Optional
 from msp_render_cli.manifest import load_manifest, validate_manifest, create_default_manifest
 from msp_render_cli.materials import LIVERY_PRESETS
 from msp_render_cli.cameras import CAMERA_PRESETS
-from composite_worker import MSPCompositor
+from composite_worker import MSPCompositor, floor_mode as manifest_floor_mode
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKER_SCRIPT = os.path.join(PROJECT_ROOT, "render_worker.py")
@@ -232,8 +232,9 @@ def cmd_composite(args):
     """Seats an existing beauty pass on the manifest's background plate."""
     manifest = _load_valid(args.manifest)
     comp = manifest.get("compositing", {})
+    floor_on = manifest_floor_mode(manifest)
     plate = args.background or comp.get("background_plate")
-    if not plate:
+    if not plate and not floor_on:
         print("✗ No background plate. Set compositing.background_plate in the "
               "manifest or pass --background.", file=sys.stderr)
         sys.exit(1)
@@ -249,24 +250,50 @@ def cmd_composite(args):
         sys.exit(1)
 
     print(f"[MSP Render CLI] Product:    {product}")
-    print(f"[MSP Render CLI] Background: {plate}\n")
+    if floor_on:
+        print(f"[MSP Render CLI] Mode:        rendered_floor (no plate is "
+              f"pasted; the rendered floor is preserved)\n")
+    else:
+        print(f"[MSP Render CLI] Background: {plate}\n")
     try:
-        res = MSPCompositor.composite_asset(
-            product_image_path=product,
-            background_image_path=plate,
-            output_image_path=output,
-            shadow_opacity=(args.shadow_opacity if args.shadow_opacity is not None
-                            else comp.get("shadow_opacity", 0.85)),
-            product_scale=comp.get("product_scale", 1.0),
-            product_offset_px=comp.get("product_offset_px", (0, 0)),
-            product_offset_pct=comp.get("product_offset_pct"),
-            sun_direction=comp.get("sun_direction", "top_left"),
-        )
+        if floor_on:
+            matte_path = os.path.join(out_dir, "beauty-matte.png")
+            mask_path = os.path.join(out_dir, "mask.png")
+            lens_kwargs = {key: comp[key] for key in
+                           ("lens_vignette", "lens_bloom", "lens_grain")
+                           if key in comp}
+            res = MSPCompositor.composite_rendered_floor_asset(
+                product,
+                mask_path,
+                matte_path,
+                output,
+                shadow_opacity=(args.shadow_opacity if args.shadow_opacity is not None
+                                else comp.get("shadow_opacity")),
+                **lens_kwargs,
+            )
+        else:
+            res = MSPCompositor.composite_asset(
+                product_image_path=product,
+                background_image_path=plate,
+                output_image_path=output,
+                shadow_opacity=(args.shadow_opacity if args.shadow_opacity is not None
+                                else comp.get("shadow_opacity", 0.85)),
+                product_scale=comp.get("product_scale", 1.0),
+                product_offset_px=comp.get("product_offset_px", (0, 0)),
+                product_offset_pct=comp.get("product_offset_pct"),
+                sun_direction=comp.get("sun_direction", "top_left"),
+            )
     except Exception as e:
         print(f"✗ Compositing failed: {e}", file=sys.stderr)
         sys.exit(1)
 
     print("✓ Compositing complete.")
+    if res.get("mode") == "rendered_floor":
+        print("  - Composite Mode:        rendered_floor")
+        print(f"  - Synthetic Shadow:      "
+              f"configured {res.get('configured_shadow_opacity', comp.get('shadow_opacity'))}, "
+              f"effective {res.get('effective_shadow_opacity', 0.0)} (real rendered "
+              f"floor supplies the shadow)")
     print(f"  - Output Image:          {res['output_path']}")
     print(f"  - Dimensions:            {res['dimensions'][0]}x{res['dimensions'][1]}")
     print(f"  - Product Fidelity Gate: "

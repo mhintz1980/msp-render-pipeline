@@ -142,6 +142,30 @@ def frame_azimuth(run_dir, frame_dir) -> float:
         raise RuntimeError(f"FRAME_AZIMUTH_UNAVAILABLE: {manifest_path}") from None
 
 
+def composite_frame(frame_dir, plate, compositing, floor_mode):
+    """One frame's finishing through the shared compositor, mode-routed.
+
+    Floor mode goes through the single shared full-scene finishing method:
+    the rendered floor stays, no plate is pasted, and the mask is checked
+    against the frame's independent beauty-matte alpha. The legacy route is
+    byte-identical to what it always was.
+    """
+    frame_dir = Path(frame_dir)
+    pre_path = str(frame_dir / "composite-prelens.png")
+    if floor_mode:
+        return MSPCompositor.composite_rendered_floor_asset(
+            str(frame_dir / "beauty.png"),
+            str(frame_dir / "mask.png"),
+            str(frame_dir / "beauty-matte.png"),
+            pre_path,
+            shadow_opacity=compositing.get("shadow_opacity"))
+    legacy_kwargs = {key: value for key, value in compositing.items()
+                     if key not in ("enabled", "background_plate")}
+    return MSPCompositor.composite_asset(
+        str(frame_dir / "beauty.png"), plate, pre_path,
+        mask_image_path=str(frame_dir / "mask.png"), **legacy_kwargs)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -156,9 +180,15 @@ def main():
     args = parser.parse_args()
     run_dir = args.run_dir.resolve()
     request, manifest = load_run(run_dir)
+    from composite_worker import floor_mode, validate_floor_config
+    combo_errors = validate_floor_config(manifest)
+    if combo_errors:
+        raise SystemExit("INVALID_FLOOR_CONFIG: " + "; ".join(combo_errors))
+    floor_on = floor_mode(manifest)
     compositing = {k: v for k, v in manifest["compositing"].items()
                    if k not in ("enabled", "background_plate")}
-    plate = str(ROOT / manifest["compositing"]["background_plate"])
+    plate = (str(ROOT / manifest["compositing"]["background_plate"])
+             if manifest["compositing"].get("background_plate") else None)
 
     # Sort on the true azimuth: the integer label collides above 360 frames.
     frames = sorted((run_dir / "cloud").glob("frame-az*/beauty.png"),
@@ -172,14 +202,16 @@ def main():
         frame_dir = beauty.parent
         azimuth = frame_azimuth(run_dir, frame_dir)
         azimuths.append(azimuth)
+        result = composite_frame(frame_dir, plate, compositing, floor_on)
         pre_path = str(frame_dir / "composite-prelens.png")
-        result = MSPCompositor.composite_asset(
-            str(beauty), plate, pre_path,
-            mask_image_path=str(frame_dir / "mask.png"), **compositing)
         results.append(result)
-        if not result["fidelity_gate_pass"]:
+        # Legacy route keeps its exact historical check; floor mode fails on
+        # any failed gate (mask consistency is new and must fail closed).
+        if (not result["fidelity_gate_pass"]
+                or (floor_on and result["status"] != "success")):
             print(json.dumps({"status": "failed", "frame": azimuth,
-                              "reason": "PRODUCT_INTEGRITY_GATE"}))
+                              "reason": "PRODUCT_INTEGRITY_GATE",
+                              "mode": result.get("mode", "plate_composite")}))
             return 1
         mask = Image.open(frame_dir / "mask.png").convert("L")
         rgb = Image.open(pre_path).convert("RGB")
@@ -208,6 +240,10 @@ def main():
 
     report = sequence_report(scalars, maes, digests, azimuths)
     report["frames"] = len(frames)
+    # The scalars above are declared in the mode they were measured in: the
+    # floor mode's coverage rides the product-only matte mask, and no gate
+    # threshold moved for it.
+    report["composite_mode"] = "rendered_floor" if floor_on else "plate_composite"
     if args.expect_frames is not None and args.expect_frames != len(frames):
         report["problems"].append(
             f"FRAME_COUNT_NOT_AS_DECLARED: found {len(frames)} expected {args.expect_frames}")

@@ -22,6 +22,83 @@ from PIL import Image, ImageFilter, ImageOps
 # alpha that write_matte_pass reads.
 MATTE_COVERAGE_CEILING = 0.90
 
+# The floor mode's composite label: the beauty pass already contains the
+# rendered environment, so the finishing step seats nothing and pastes nothing.
+FLOOR_COMPOSITE_MODE = "rendered_floor"
+
+
+def floor_mode(manifest) -> bool:
+    """Explicit lighting.floor.enabled is the only floor authority.
+
+    compositing.enabled=False never implies floor mode: the flag that turns
+    off local finishing says nothing about what the render contains.
+    """
+    floor = (manifest.get("lighting") or {}).get("floor")
+    return isinstance(floor, dict) and floor.get("enabled") is True
+
+
+def validate_floor_config(manifest):
+    """Feature-combination validation for the new fields; returns error strings.
+
+    Pure and importable by the dispatcher, the probe, and the CLI, so an
+    invalid combination dies before any billable call. Legacy keys stay
+    permissive - only the new fields and their combinations are checked.
+    """
+    errors = []
+    out = manifest.get("output") or {}
+    film = out.get("film_transparent", True)
+    if not isinstance(film, bool):
+        errors.append(
+            "INVALID_FILM_TRANSPARENT: output.film_transparent must be a "
+            f"boolean (got {film!r})")
+        film = True
+    floor_block = (manifest.get("lighting") or {}).get("floor")
+    if floor_block is not None and not isinstance(floor_block, dict):
+        errors.append(
+            "INVALID_FLOOR_BLOCK: lighting.floor must be an object "
+            f"(got {floor_block!r})")
+    enabled = floor_mode(manifest)
+    if enabled:
+        if film:
+            errors.append(
+                "FLOOR_REQUIRES_OPAQUE_FILM: lighting.floor.enabled=true "
+                "needs output.film_transparent=false - the floor must be "
+                "baked into the beauty pass.")
+        comp = manifest.get("compositing") or {}
+        scale = comp.get("product_scale", 1.0)
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) \
+                or scale != 1.0:
+            errors.append(
+                "FLOOR_REQUIRES_UNIT_PRODUCT_SCALE: a full-scene render "
+                f"cannot be repositioned like a cut-out (product_scale="
+                f"{scale!r}).")
+        off_px = comp.get("product_offset_px", (0, 0))
+        off_pct = comp.get("product_offset_pct", (0, 0))
+
+        def _zero(seq):
+            return (isinstance(seq, (list, tuple)) and len(seq) == 2
+                    and all(v == 0 for v in seq))
+
+        if not _zero(off_px) or not _zero(off_pct):
+            errors.append(
+                "FLOOR_REQUIRES_ZERO_PRODUCT_OFFSET: a full-scene render "
+                f"cannot be repositioned (offset_px={off_px!r}, "
+                f"offset_pct={off_pct!r}).")
+        passes = (out.get("passes") or {})
+        if passes.get("alpha_mask", True) is False:
+            errors.append(
+                "FLOOR_REQUIRES_ALPHA_MASK: floor mode finishes from the "
+                "independently rendered product matte; "
+                "output.passes.alpha_mask=false cannot produce it and the "
+                "job could never finish. Keep alpha_mask enabled or disable "
+                "the floor.")
+    elif not film:
+        errors.append(
+            "OPAQUE_NON_FLOOR_UNSUPPORTED: output.film_transparent=false "
+            "without lighting.floor.enabled=true has no independent matte "
+            "mechanism; enable the floor or keep film_transparent=true.")
+    return errors
+
 
 class MSPCompositor:
     """
@@ -205,6 +282,171 @@ class MSPCompositor:
             noise = rng.normal(0.0, grain, size=(height, width)).astype(np.float32)
             arr = arr + noise[:, :, np.newaxis]
         return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+    @classmethod
+    def composite_rendered_floor_asset(
+        cls,
+        beauty_image_path: str,
+        mask_image_path: str,
+        matte_alpha_path: str,
+        output_image_path: str,
+        shadow_opacity: Optional[float] = None,
+        lens_vignette: float = 0.0,
+        lens_bloom: float = 0.0,
+        lens_grain: float = 0.0,
+        frame_index: int = 0,
+    ) -> Dict[str, Any]:
+        """Full-scene finishing for the rendered-floor mode.
+
+        The beauty pass already contains the real rendered floor, so no plate
+        is pasted and no synthetic shadow is drawn: the full opaque beauty RGB
+        IS the composite. The product mask and the independently rendered
+        beauty-matte alpha are measurement evidence only.
+
+        Gates (all against the SAVED bytes):
+        - the beauty itself must be opaque: a transparent beauty in floor
+          mode means the floor was never baked in, and finishing it would
+          seat a cut-out on nothing;
+        - whole-frame RGB equality against the beauty: the rendered floor is
+          preserved exactly, and a floor-only tamper is caught (which a
+          product-only gate cannot see);
+        - product-only fidelity metrics over mask==255;
+        - matte plausibility (existing <=0.90 ceiling, nonempty opaque region);
+        - mask consistency against the INDEPENDENT beauty-matte alpha with the
+          existing footprint tolerances. This proves mask-vs-matte agreement;
+          it does NOT prove the stochastic beauty pass's silhouette aligns
+          with the matte, and the result says so instead of overclaiming.
+        Missing or wrong-sized artifacts raise; gate failures are reported
+        through the result and keep the file on disk. The lens pass runs
+        exactly once, after the gates.
+        """
+        for label, path in (("beauty", beauty_image_path),
+                            ("mask", mask_image_path),
+                            ("matte alpha", matte_alpha_path)):
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"rendered-floor composite missing {label}: {path}")
+        beauty = Image.open(beauty_image_path).convert("RGB")
+        with Image.open(beauty_image_path) as _beauty_src:
+            _bands = _beauty_src.getbands()
+            # Opaque = every alpha sample 255 (or no alpha channel at all).
+            beauty_opaque_pass = ("A" not in _bands) or \
+                (_beauty_src.getchannel("A").getextrema()[0] == 255)
+        mask_img = Image.open(mask_image_path).convert("L")
+        matte_img = Image.open(matte_alpha_path).convert("RGBA")
+        size = beauty.size
+        if mask_img.size != size or matte_img.size != size:
+            raise ValueError(
+                "ARTIFACT_SIZE_MISMATCH: beauty "
+                f"{size}, mask {tuple(mask_img.size)}, "
+                f"matte alpha {tuple(matte_img.size)} - sizes must match "
+                "because the matte render shares the beauty camera.")
+        mask_np = np.array(mask_img)
+        matte_alpha = np.array(matte_img.split()[3])
+        mask_binary = mask_np == 255
+        coverage = float(mask_binary.mean())
+        matte_plausibility_pass = bool(mask_binary.any()) \
+            and coverage <= MATTE_COVERAGE_CEILING
+
+        output_image_path = cls._save_robustly(beauty, output_image_path)
+
+        beauty_np = np.array(beauty)
+        fidelity_gate_pass = False
+        saved_check_pass = False
+        max_diff, mean_diff = 0, 0.0
+        prod_max_diff, prod_mean_diff = 0, 0.0
+        try:
+            with Image.open(output_image_path) as reloaded_fh:
+                reloaded = reloaded_fh.convert("RGB")
+            if reloaded.size == size:
+                reloaded_np = np.array(reloaded)
+                diff = np.abs(beauty_np.astype(int) - reloaded_np.astype(int))
+                max_diff = int(diff.max())
+                mean_diff = float(diff.mean())
+                # Whole-frame equality: floor pixels count as product here.
+                fidelity_gate_pass = max_diff == 0
+                if mask_binary.any():
+                    prod_diff = diff[mask_binary]
+                    prod_max_diff = int(prod_diff.max())
+                    prod_mean_diff = float(prod_diff.mean())
+            saved_check_pass = fidelity_gate_pass and reloaded.size == size
+        except Exception:
+            fidelity_gate_pass = saved_check_pass = False
+
+        mask_gate_pass = None
+        try:
+            def footprint_pairing(mask_fp, matte_fp):
+                inter = int(np.count_nonzero(mask_fp & matte_fp))
+                union = int(np.count_nonzero(mask_fp | matte_fp))
+                iou = (inter / union) if union else 1.0
+                mask_box = cls._footprint_bbox(mask_fp)
+                matte_box = cls._footprint_bbox(matte_fp)
+                if mask_box and matte_box:
+                    bbox_ok = all(abs(a - b) <= 2
+                                  for a, b in zip(mask_box, matte_box))
+                else:
+                    bbox_ok = union == 0
+                return bool(iou >= 0.98 and bbox_ok)
+
+            mask_gate_pass = (footprint_pairing(mask_np > 8, matte_alpha > 8)
+                              or footprint_pairing(mask_np >= 128,
+                                                   matte_alpha >= 128))
+        except Exception:
+            mask_gate_pass = False
+
+        gates_ok = (fidelity_gate_pass and saved_check_pass
+                    and matte_plausibility_pass and mask_gate_pass is not False
+                    and beauty_opaque_pass)
+
+        lens_applied = False
+        if any((lens_vignette, lens_bloom, lens_grain)):
+            try:
+                with Image.open(output_image_path) as base_fh:
+                    lens_base = base_fh.convert("RGB")
+                lensed = cls.apply_lens_pass(
+                    lens_base, vignette=lens_vignette, bloom=lens_bloom,
+                    grain=lens_grain, frame_index=frame_index)
+                output_image_path = cls._save_robustly(lensed,
+                                                       output_image_path)
+                lens_applied = True
+            except Exception:
+                lens_applied = False
+
+        try:
+            product_bbox = cls._mask_bounds(mask_img)
+        except ValueError:
+            product_bbox = None
+
+        return {
+            "output_path": output_image_path,
+            "saved_image_path": output_image_path,
+            "mode": FLOOR_COMPOSITE_MODE,
+            "status": "success" if gates_ok else "failed",
+            "beauty_opaque_pass": beauty_opaque_pass,
+            "fidelity_gate_pass": fidelity_gate_pass,
+            "product_fidelity": {
+                "max_pixel_drift": prod_max_diff,
+                "mean_pixel_drift": prod_mean_diff,
+            },
+            "mask_gate_pass": mask_gate_pass,
+            "mask_consistency_source": (
+                "independently rendered beauty-matte.png alpha (product-only "
+                "cutout); proves mask-vs-matte agreement, NOT that the "
+                "stochastic beauty silhouette aligns with the matte"),
+            "saved_check_pass": saved_check_pass,
+            "matte_plausibility_pass": matte_plausibility_pass,
+            "max_pixel_drift": max_diff,
+            "mean_pixel_drift": mean_diff,
+            "dimensions": size,
+            "product_bbox": product_bbox,
+            "coverage_pct": round(100.0 * coverage, 2),
+            "lens_applied": lens_applied,
+            "lens": {"vignette": lens_vignette, "bloom": lens_bloom,
+                     "grain": lens_grain, "frame_index": frame_index},
+            "synthetic_shadow_applied": False,
+            "configured_shadow_opacity": shadow_opacity,
+            "effective_shadow_opacity": 0.0,
+        }
 
     @classmethod
     def composite_asset(

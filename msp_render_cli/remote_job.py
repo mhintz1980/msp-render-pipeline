@@ -415,6 +415,17 @@ def build_result(
     if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0
            for value in timing_values.values()):
         raise ContractError("CONTRACT_INVALID", "prepare, render, and total timings must be non-negative numbers")
+    # Optional floor-mode pass split (batch 3b): carried through when the
+    # worker report supplies it, ignored otherwise - fully backwards
+    # compatible with every recorded result.
+    normalised_timings = {name: float(value) for name, value in timing_values.items()}
+    for extra in ("beauty_render_seconds", "matte_render_seconds"):
+        value = timings.get(extra)
+        if value is not None:
+            if not isinstance(value, (int, float)) or isinstance(value, bool) \
+                    or not math.isfinite(value) or value < 0:
+                raise ContractError("CONTRACT_INVALID", extra + " must be a non-negative number")
+            normalised_timings[extra] = float(value)
     root = Path(output_dir)
     artifacts = _collect_artifacts(root)
     by_name = {item["path"]: item for item in artifacts}
@@ -449,7 +460,7 @@ def build_result(
         "failure_code": selected_failure,
         "compute": normalised_compute,
         "runtime": observed_runtime,
-        "timings": {name: float(value) for name, value in timing_values.items()},
+        "timings": normalised_timings,
         "artifacts": artifacts,
     }
     if not validate_result(result):

@@ -842,3 +842,34 @@ Sequencing note: 3a's frame-count gate and orbit generator are also
 prerequisites for the T-V2 sequencer, which is the first thing that will
 render a 300-frame single orbit. Doing them now costs nothing and removes the
 chance that the first expensive shot duplicates frames.
+
+### 13.4 Batch 3b FINAL, 2026-09-21 — floor renders, 2-frame probe technically approved, owner look pending
+
+The 3b mechanism landed and is measured in `docs/cloud-smoke.md`
+("2026-09-21 batch-3b FINAL"): opt-in in-scene floor
+(`lighting.floor.enabled` with `output.film_transparent=false`),
+product-only matte from a second floor-hidden transparent render, byte-exact
+floor-preservation gate, matte-plausibility tripwire, synthetic shadow
+suppressed in floor mode. Three dispatch attempts: run1 passed, run2 failed
+after 3.417 container-s (stale `camera.matrix_world` — projection ran before
+the depsgraph update; fixed by updating the depsgraph before projection),
+run3 passed. Run3 measured: warm az222 RENDER phase 11.27 s vs the 10.2 s
+batch-1 warm baseline = **+10.5%, inside the declared +10-30% band**
+(render phase vs render baseline only; frame totals are not compared against
+it). All-attempt cost total 516.655 container-s ≈ USD 0.160 rate-derived,
+**NOT billed**. Run3 passed `probe_sequence --expect-frames 2 --no-encode`
+in `rendered_floor` mode; suite 211 tests OK
+(`output/batch3b-tests-transform.log`).
+
+**No encode was run and no full-orbit behavior is guaranteed from a 2-frame
+probe.** The parent visually inspected both run3 `composite-lens.png` frames:
+the run1 diagonal finite-floor edge is eliminated, the background is smooth,
+shadows are grounded. That is **technical approval for the TWOFRAME probe
+only** — owner look acceptance is pending.
+
+Mask IoU correction: the 0.966/0.800 numbers are raw-mask vs raw batch-2 mask
+measurements (not shifted composites, as earlier text wrongly said), and they
+are incomparable by definition — batch-2 masks include the catcher contact
+shadow, floor-mode masks are product-only (see
+`output/batch3b-evidence-review-deepseek.txt`). Run record and next actions:
+`HANDOFF-2026-09-21-batch3b.md`.

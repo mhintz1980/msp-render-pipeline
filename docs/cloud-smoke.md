@@ -377,3 +377,100 @@ own echo. Adversarially reviewed in fresh context by `deepseek/deepseek-flash`
 (different vendor family), which returned FIX-FIRST with two blockers; both were
 reproduced independently before being accepted, and a correction round followed.
 Details in the handoff.
+
+### 2026-09-21 batch-3b FINAL: rendered studio floor — 2-frame probe technically approved, owner look pending
+
+Three dispatch attempts on 2026-09-21, 2 frames each (az 42 + 222, the
+standing preview pair) of `jobs/rl300_05_studio-floor.json` via
+`scripts/cloud_job_render.py`, one L4, one Blender process per frame, all
+renders on Modal, composited locally. Per-dispatch corrected estimate
+**USD 0.197** recorded pre-dispatch in each `request.json`
+(`render_passes_per_frame: 2`; the preflight-only dir
+`output/preview-studio-floor-3b-20260921/` carries a superseded 0.134 from
+the corrected frame-count bug and had no dispatch).
+
+**Attempt record (all attempts counted in cost totals):**
+
+| Run | Outcome | Recorded container s |
+|---|---|---|
+| `...-run1/` | passed; wall 279.1 s; both frames Blender exit 0 with GPU-process evidence; artifacts hashed + downloaded | 253.762 + 12.594 = 266.356 |
+| `...-run2/` | **failed** on az42: `BLENDER_FAILED_OR_NO_OUTPUT exit=20`, wall 12.304 s | 3.417 |
+| `...-run3/` | **passed**; wall 270.175 s; both frames Blender exit 0 with GPU-process evidence; artifacts hashed + downloaded | 233.877 + 13.005 = 246.882 |
+
+**Run2 failure cause (recorded):** the camera projection ran before Blender's
+depsgraph update, so `camera.matrix_world` was stale when the floor-mode
+projection computed. Fix: explicit depsgraph update before projection. Run3
+confirms the fix.
+
+**Run3 measured timings (per-frame `render-report.json` / `measured-matte-shadow.json`):**
+
+| Frame | Beauty | Matte | Render phase | Frame total | Container s |
+|---|---|---|---|---|---|
+| az42 (cold, OptiX compile) | 222.69 s | 2.74 s | 225.69 s | 228.50 s | 233.877 |
+| az222 (warm) | 8.38 s | 2.63 s | 11.27 s | 11.72 s | 13.005 |
+
+Render phase and frame total are distinct numbers and are labeled separately
+from here on. **Warm RENDER phase 11.27 s vs the 10.2 s batch-1 warm baseline
+is +10.5% — inside the declared +10-30% band, numerically true.** The warm
+frame total (11.72 s) is NOT compared against the 10.2 s render baseline;
+no total-vs-baseline percentage is claimed.
+
+**Cost totals, all attempts included, RATE-DERIVED NOT BILLED** (recorded
+all-in USD 0.00030992/s; Modal usage not queried, no invoice figure claimed):
+516.655 container-s across run1+run2+run3 ≈ **USD 0.160** (run1 ≈ 0.083,
+run2 ≈ 0.001, run3 ≈ 0.077).
+
+Run3 mechanism and gates (from `measured-matte-shadow.json` and
+`sequence-report.json`): product-only matte from the second floor-hidden
+transparent render; pre-lens RGB byte-exact against full beauty (max drift 0
+both frames); mask consistency vs the independently rendered matte alpha;
+`matte_plausibility_pass` (coverage 41.28% az42 / 41.32% az222, ceiling 0.90
+unfired); synthetic shadow suppressed (configured 0.35, effective 0.0 — real
+floor shadows); lens applied after gates. `probe_sequence
+--expect-frames 2 --no-encode` passed in `rendered_floor` mode: grain
+deterministic, no outliers, frame MAE 44.14. Suite: **211 tests OK**
+(`output/batch3b-tests-transform.log`). Model routing for the implementation
+rounds: `output/batch3b-routing-evidence.json` (196 ocx rows: 153
+glm-5.3-flash, 24 glm-5.3, 43 deepseek-flash); no model spend figure asserted.
+
+**Mask IoU correction.** The 0.966 (az42) / 0.800 (az222) numbers are raw-mask
+IoU measurements of the floor-mode raw masks against the raw batch-2 masks at
+the matching azimuths (reproduced independently in
+`output/batch3b-evidence-review-deepseek.txt`); earlier text saying they were
+"computed against shifted composites, raw batch-2 IoU unmeasured" is wrong and
+is corrected here. They are **not a matte defect**: the floor mask is a strict
+subset of the batch-2 mask (zero product pixels missing in both), and the
+batch-2 masks include the shadow-catcher contact shadow while the floor-mode
+masks are product-only — so the two are definitionally incomparable and the
+0.98 threshold does not apply across them. Camera blocks are identical
+(azimuth 42/222, elevation 11.0, distance 6.6, 85 mm, target offset
+[0,0,0.92]); framing is not the cause.
+
+**Visual status (owner gate).** Run1's lensed composites showed a finite-floor
+diagonal edge against the dark world (FIX-FIRST). After the run3 fix, the
+parent visually inspected both run3 `composite-lens.png` frames: the diagonal
+finite-floor edge is eliminated, the background is smooth, and shadows are
+grounded. This was technical approval for the TWO-FRAME probe only.
+
+**Owner look review, 2026-09-21: FIX-FIRST — floor look NOT accepted.** Mark
+annotated run3 az42 and identified three defects (markup files in
+`output/preview-studio-floor-3b-20260921-run3/cloud/frame-az42/`:
+`composite-lens-markup1.png`, `composite-prelens-markup2.png` — the white
+ellipse "approximates the outline of the artifact" — and
+`composite-prelens-markup3.png`, a mirrored-halves comparison). Diagnosis
+(parent, accepted by owner): the background above the floor line is the HDRI's
+own baked backdrop, and the rendered floor plane does not match it at the
+horizon seam; the softbox panel in `env_studio-softbox.png` reflects off the
+floor at grazing angle as an apparent "spotlight" pool on the right side
+(markup1/2); the mirror mismatch (markup3) is partly the deliberately
+asymmetric light rig (normal) and partly that floor/backdrop seam (defect).
+**Owner decision: replace the flat plane with a curved studio cyclorama
+(infinity cove)** — one continuous neutral surface, rotationally symmetric,
+orbit-safe. Plan and constraints: `HANDOFF-2026-09-21-batch3b.md`. The
+batch-3b floor engineering (matte mechanism, gates, timing) stands; the floor
+*geometry* is the open item.
+
+Workspace note: a residual `.test_deps/` directory at the repo root was
+created against instruction by a prior agent and is permission-inaccessible;
+it is left untouched (not deleted, ACL not changed). All batch-3b code changes
+are uncommitted; unrelated existing work is untouched.

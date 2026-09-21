@@ -83,7 +83,9 @@
       "properties": {
         "prepare": {"type": "number", "minimum": 0},
         "render": {"type": "number", "minimum": 0},
-        "total": {"type": "number", "minimum": 0}
+        "total": {"type": "number", "minimum": 0},
+        "beauty_render_seconds": {"type": "number", "minimum": 0},
+        "matte_render_seconds": {"type": "number", "minimum": 0}
       }
     },
     "artifact": {

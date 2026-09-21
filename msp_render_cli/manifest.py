@@ -48,6 +48,39 @@ def validate_manifest(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     if out.get("width", 0) <= 0 or out.get("height", 0) <= 0:
         return False, "Output width and height must be positive integers"
 
+    # New batch-3b fields are type-strict (a typo must fail loudly), while
+    # every legacy field keeps its permissive behaviour.
+    film = out.get("film_transparent")
+    if film is not None and not isinstance(film, bool):
+        return False, "output.film_transparent must be a boolean"
+    floor_block = data.get("lighting", {}).get("floor")
+    if floor_block is not None:
+        if not isinstance(floor_block, dict):
+            return False, "lighting.floor must be an object"
+        floor_enabled = floor_block.get("enabled")
+        if floor_enabled is not None and not isinstance(floor_enabled, bool):
+            return False, "lighting.floor.enabled must be a boolean"
+    comp = data.get("compositing", {})
+    for key in ("product_scale",):
+        if key in comp:
+            value = comp[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False, f"compositing.{key} must be a number"
+    for key in ("product_offset_px", "product_offset_pct"):
+        if key in comp:
+            value = comp[key]
+            if (not isinstance(value, (list, tuple)) or len(value) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           for v in value)):
+                return False, f"compositing.{key} must be two numbers"
+
+    # Feature combinations (floor vs film vs placement) have one authoritative
+    # implementation, shared with the dispatcher and the probe.
+    from composite_worker import validate_floor_config
+    combo_errors = validate_floor_config(data)
+    if combo_errors:
+        return False, combo_errors[0]
+
     return True, None
 
 def create_default_manifest(

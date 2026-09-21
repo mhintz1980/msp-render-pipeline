@@ -147,6 +147,13 @@ def frame_plan(manifest_path, azimuths, overrides=None):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     apply_overrides(manifest, overrides)
     reject_duplicate_azimuths(azimuths)
+    # Feature-combination validation runs here, after overrides, before any
+    # Modal Function object even exists: an invalid floor/film combination
+    # must never reach a billable call.
+    from composite_worker import floor_mode, validate_floor_config
+    errors = validate_floor_config(manifest)
+    if errors:
+        raise ValueError("INVALID_FLOOR_CONFIG: " + "; ".join(errors))
     hdri = manifest.get("lighting", {}).get("hdri_path")
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")
@@ -172,6 +179,7 @@ def frame_plan(manifest_path, azimuths, overrides=None):
     return {
         "job_id": manifest["job_id"],
         "manifest_path": str(manifest_path),
+        "floor_mode": floor_mode(manifest),
         "frames": frames,
         "cad_mount": cad_mount,
         "hdri_mount": hdri_mount,
@@ -185,6 +193,22 @@ def estimate_cost_usd(frame_seconds):
     """All-in estimate: one cold start plus the given per-frame seconds."""
     per_second = GPU_RATE_PER_S + 4 * CPU_RATE_PER_CORE_S + 16 * MEMORY_RATE_PER_GIB_S
     return round((COLD_START_SECONDS + sum(frame_seconds)) * per_second, 4)
+
+
+def frame_render_seconds(floor_mode=False):
+    """Conservative per-frame render seconds fed to the estimate.
+
+    Floor mode renders each frame TWICE (opaque beauty plus the floor-hidden
+    product matte), so the estimate explicitly counts both passes. The local
+    101.65 s/frame marginal figure is the measured basis; the +10-30% hand
+    wave is not used. Actual timings come from the render report.
+
+    Returns the per-frame seconds as a scalar; the call site repeats it once
+    per frame when building the estimate list.
+    """
+    local_marginal_seconds = 101.65
+    passes = 2.0 if floor_mode else 1.0
+    return local_marginal_seconds * passes
 
 
 def blender_command(container_manifest):
@@ -263,11 +287,28 @@ def composite_settings(compositing):
             if key not in ("enabled", "background_plate")}
 
 
-def run_composite(frame_dir, plate, compositing):
+def run_composite(frame_dir, plate, compositing, floor_mode=False):
     """Local composite with the stills pipeline's own compositor and settings."""
     from composite_worker import MSPCompositor
-    beauty = str(Path(frame_dir) / "beauty.png")
-    out = str(Path(frame_dir) / "composite.png")
+    frame_dir = Path(frame_dir)
+    lens_kwargs = {key: compositing[key] for key in
+                   ("lens_vignette", "lens_bloom", "lens_grain")
+                   if key in compositing}
+    if floor_mode:
+        # Full-scene finishing: the rendered floor stays, no plate is pasted,
+        # and the mask is checked against the independent beauty-matte alpha.
+        result = MSPCompositor.composite_rendered_floor_asset(
+            str(frame_dir / "beauty.png"),
+            str(frame_dir / "mask.png"),
+            str(frame_dir / "beauty-matte.png"),
+            str(frame_dir / "composite.png"),
+            shadow_opacity=compositing.get("shadow_opacity"), **lens_kwargs)
+        print(json.dumps({"floor_composite": {
+            "frame": frame_dir.name, "status": result["status"],
+            "mode": result["mode"]}}))
+        return result["output_path"]
+    beauty = str(frame_dir / "beauty.png")
+    out = str(frame_dir / "composite.png")
     MSPCompositor.composite_asset(beauty, plate, out, **composite_settings(compositing))
     return out
 
@@ -302,6 +343,7 @@ def main():
                     str(args.azimuths if args.azimuths is not None else "42").split(",")
                     if value.strip()]
     plan = frame_plan(args.manifest, azimuths, args.overrides)
+    floor_on = bool(plan["floor_mode"])
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
 
@@ -328,8 +370,11 @@ def main():
     }
     # Local-measured marginal render time (video-pipeline-brief.md section 3.1:
     # 101.65 s/frame mean at this resolution); the cloud figure is unknown until
-    # the first measured run, exactly as brief section 4.1 states.
-    request["cost_estimate_usd"] = estimate_cost_usd([101.65] * len(azimuths))
+    # the first measured run, exactly as brief section 4.1 states. Floor mode
+    # doubles it: the matte pass is a second full render, not a percentage.
+    request["render_passes_per_frame"] = 2 if floor_on else 1
+    request["cost_estimate_usd"] = estimate_cost_usd(
+        [frame_render_seconds(floor_mode=floor_on)] * len(azimuths))
     save(output / "request.json", request)
     for frame in plan["frames"]:
         save(output / f"manifest-{frame_name(frame['camera']['azimuth_deg'])}.json", frame)
@@ -384,13 +429,14 @@ def main():
                 if result["status"] != "rendered":
                     break  # a failed frame must not cost the frames after it
         composites = []
-        if plan["plate_path"] and plan["compositing"].get("enabled"):
+        if plan["compositing"].get("enabled") and (floor_on or plan["plate_path"]):
             for result in results:
                 if result["status"] != "rendered":
                     continue
                 composites.append(run_composite(
                     output / "cloud" / (FRAME_PREFIX + result["frame"]),
-                    plan["plate_path"], plan["compositing"]))
+                    plan["plate_path"], plan["compositing"],
+                    floor_mode=floor_on))
         save(output / "status.json", {
             "status": "passed" if results and all(r["status"] == "rendered" for r in results) else "failed",
             "wall_seconds": round(time.monotonic() - started, 3),

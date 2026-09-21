@@ -131,7 +131,17 @@
           "description": "Image used as the world environment texture. Point this at the same file as compositing.background_plate so the machine is lit by the scene it will be dropped into. Omit or null to use the preset's procedural sky."
         },
         "hdri_strength": { "type": "number", "minimum": 0, "default": 1.0 },
-        "hdri_rotation_deg": { "type": "number", "default": 0.0 }
+        "hdri_rotation_deg": { "type": "number", "default": 0.0 },
+        "floor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Add a real rendered neutral studio floor after the ground-hide pass. Requires output.film_transparent=false, unit product scale and zero product offset; suppresses the shadow catcher in every lighting branch. The product cutout then comes from a second floor-hidden render (beauty-matte.png / mask.png)."
+            }
+          }
+        }
       }
     },
 
@@ -198,6 +208,11 @@
         "samples": { "type": "integer", "minimum": 1 },
         "engine": { "type": "string", "enum": ["CYCLES", "BLENDER_EEVEE_NEXT"] },
         "denoiser": { "type": "string" },
+        "film_transparent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render on transparent film so the product can be composited onto a plate. Leave the default true for cut-outs; a rendered studio floor (lighting.floor.enabled) requires false, because the floor must be baked into the beauty pass."
+        },
         "color": {
           "type": "object",
           "properties": {

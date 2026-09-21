@@ -1,0 +1,147 @@
+{
+  "job_id": "rl300_05_studio-floor",
+  "package_model": "RL300_SAFE",
+  "_description": "Opt-in rendered neutral studio floor under the machine, derived from rl300_04_studio-white. Preview settings match the accepted batch2 frame manifest (overrides recorded in output/preview-turntable-batch2-20260920/request.json): DOF f/3.2, shadow opacity 0.35, white sweep plate reference. The floor is new environment geometry with a fixed neutral material - NOT a product material change, and NOT an owner acceptance of anything. Floor mode bakes the floor into an opaque beauty pass and recovers the product cutout from a second floor-hidden render.",
+  "cad_source": {
+    "file_path": "cad/RL300-SAFE-photoreal.blend",
+    "format": "blend",
+    "up_axis": "Z",
+    "unit_scale": 1.0
+  },
+  "camera": {
+    "preset": "CUSTOM",
+    "focal_length_mm": 85.0,
+    "elevation_deg": 11.0,
+    "azimuth_deg": 42.0,
+    "distance_multiplier": 6.6,
+    "target_offset": [0.0, 0.0, 0.92],
+    "depth_of_field": {
+      "enabled": true,
+      "f_stop": 3.2,
+      "blades": 8
+    }
+  },
+  "geometry": {
+    "smooth_hardware": false,
+    "hide_misplaced_isolators": true
+  },
+  "livery": {
+    "preset": "preserve_existing"
+  },
+  "lighting": {
+    "preset": "studio_white",
+    "intensity_multiplier": 0.7,
+    "analytic_lights": true,
+    "shadow_catcher": false,
+    "hdri_path": "backgrounds/env_studio-softbox.png",
+    "hdri_strength": 2.0,
+    "hdri_rotation_deg": 0.0,
+    "floor": {
+      "enabled": true
+    }
+  },
+  "photoreal": {
+    "enabled": true,
+    "bevel": {
+      "enabled": true,
+      "radius_m": 0.0004,
+      "samples": 4
+    },
+    "quality": {
+      "max_bounces": 8,
+      "diffuse_bounces": 3,
+      "glossy_bounces": 6,
+      "transmission_bounces": 6,
+      "transparent_bounces": 8,
+      "clamp_indirect": 10.0,
+      "blur_glossy": 1.0,
+      "light_tree": true,
+      "adaptive_sampling": true,
+      "adaptive_threshold": 0.02,
+      "caustics_reflective": false,
+      "caustics_refractive": false
+    },
+    "powder_coat": {
+      "enabled": true,
+      "materials": ["MSP_YELLOW_PAINT"],
+      "coat_weight": 0.85,
+      "coat_roughness": 0.05,
+      "roughness_min": 0.34,
+      "roughness_max": 0.52,
+      "roughness_noise_scale": 45.0,
+      "peel_scale": 650.0,
+      "peel_strength": 0.3,
+      "peel_distance": 0.0012,
+      "bevel_radius_m": 0.001,
+      "flow_scale": 130.0,
+      "flow_weight": 0.6
+    },
+    "metal_finish": {
+      "enabled": true,
+      "materials": {
+        "MSP_ALUMINUM_CAST": {
+          "base_color": [0.79, 0.795, 0.8],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012
+        },
+        "MSP_ALUMINUM_CAST_TURNED": {
+          "base_color": [0.79, 0.795, 0.8],
+          "metallic": 1.0,
+          "roughness_machined": 0.22,
+          "roughness_cast": 0.32,
+          "cast_scale": 25.0,
+          "grain_scale": 1400.0,
+          "grain_strength": 0.06,
+          "grain_distance": 0.00012,
+          "anisotropy": 0.4,
+          "anisotropy_axis": "Y"
+        },
+        "MSP_STAINLESS_FASTENER": {
+          "base_color": [0.86, 0.865, 0.87],
+          "metallic": 1.0
+        },
+        "MSP_STAINLESS": {
+          "base_color": [0.82, 0.83, 0.84],
+          "metallic": 1.0
+        }
+      }
+    }
+  },
+  "output": {
+    "width": 1800,
+    "height": 1250,
+    "samples": 96,
+    "engine": "CYCLES",
+    "denoiser": "OPENIMAGEDENOISE",
+    "film_transparent": false,
+    "color": {
+      "view_transform": "AgX",
+      "look": "AgX - Medium High Contrast",
+      "exposure": -1.5,
+      "gamma": 1.0
+    },
+    "passes": {
+      "beauty": true,
+      "alpha_mask": true,
+      "depth_map": true,
+      "surface_normals": false,
+      "contact_shadow": false
+    },
+    "output_dir": "./output/rl300_05_studio-floor"
+  },
+  "compositing": {
+    "enabled": true,
+    "background_plate": "backgrounds/env_studio-white-v2.png",
+    "_why_plate": "Batch2 preview provenance only: in floor mode no plate is pasted - the full rendered floor pixels are the composite. shadow_opacity 0.35 is recorded and reported as ignored (effective 0.0).",
+    "shadow_opacity": 0.35,
+    "sun_direction": "top_left",
+    "product_scale": 1.0,
+    "product_offset_px": [0, 0],
+    "product_offset_pct": [0.0, 0.0]
+  }
+}

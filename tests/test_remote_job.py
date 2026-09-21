@@ -360,6 +360,10 @@ class RenderWorkerGpuRequiredTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._module_state = {name: sys.modules.get(name) for name in ("bpy", "mathutils")}
+        # A module-level render_worker import from another test class (e.g.
+        # test_floor_mode) ran before this stub existed and froze bpy=None.
+        # Re-import under the stub so the class always tests stubbed Blender.
+        sys.modules.pop("render_worker", None)
         scene = types.SimpleNamespace(
             objects=[],
             world=None,
@@ -398,6 +402,8 @@ class RenderWorkerGpuRequiredTests(unittest.TestCase):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+        # Drop the stub-bound re-import so later importers see bpy=None again.
+        sys.modules.pop("render_worker", None)
 
     def stub_render_op(self, worker):
         """Give the shared bpy stub a no-op render operator for this test only.

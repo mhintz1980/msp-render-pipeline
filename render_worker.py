@@ -315,7 +315,8 @@ def mute_catcher_bounce(catcher_obj):
                 pass
 
 
-def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
+def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float,
+                   suppress_shadow_catcher: bool = False):
     """Sets up calibrated studio softbox lights or physical outdoor sun/sky environment."""
     preset = lighting_spec.get("preset", "studio_dark")
     intensity = lighting_spec.get("intensity_multiplier", 1.0)
@@ -336,7 +337,10 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float):
                 bpy.data.objects.remove(obj, do_unlink=True)
 
     # Ground plane shadow catcher
-    want_shadow = lighting_spec.get("shadow_catcher", False)
+    # In floor mode the studio floor IS the ground: a shadow catcher would
+    # fight the floor's own material, so the caller suppresses it.
+    want_shadow = (lighting_spec.get("shadow_catcher", False)
+                   and not suppress_shadow_catcher)
     catcher_obj = bpy.data.objects.get("GroundShadowCatcher")
     if want_shadow:
         if not catcher_obj:
@@ -932,6 +936,349 @@ def apply_cycles_quality(scene, quality: Dict[str, Any]):
           f"{c.max_bounces} bounces, glossy {c.glossy_bounces}.")
 
 
+FLOOR_OBJECT_NAME = "MSP_StudioFloor"
+FLOOR_MATERIAL_NAME = "MSP_StudioFloor_Neutral"
+FLOOR_COLOR_HEX = "#B8B8B8"
+FLOOR_ROUGHNESS = 0.6
+
+
+def film_transparent_for(out_spec: Dict[str, Any]) -> bool:
+    """output.film_transparent, defaulting to the legacy transparent cut-out.
+
+    Accepts either the output block itself or a whole manifest; an explicit
+    boolean (true or false) is always honoured, never coerced to the default.
+    """
+    block = out_spec.get("output", out_spec) if isinstance(out_spec, dict) else {}
+    return bool(block.get("film_transparent", True))
+
+
+def floor_requested(manifest: Dict[str, Any]) -> bool:
+    """lighting.floor.enabled is the only authority for floor mode.
+
+    A missing block, a non-dict block, or a non-boolean enabled value is a
+    configuration error, not a silent false - but a block that is absent
+    entirely stays the permissive legacy default (no floor).
+    """
+    lighting = manifest.get("lighting", {})
+    floor = lighting.get("floor")
+    if floor is None:
+        return False
+    if not isinstance(floor, dict) or not isinstance(floor.get("enabled"), bool):
+        raise ValueError(
+            "INVALID_FLOOR_CONFIG: lighting.floor.enabled must be a boolean "
+            f"(got: {floor!r})")
+    return floor["enabled"]
+
+
+def validate_output_config(manifest: Dict[str, Any]) -> bool:
+    """Reject unsupported film/floor combinations before any expensive work.
+
+    Returns the floor flag. Raises ValueError on:
+    - floor with transparent film (the floor must be baked into the beauty);
+    - opaque film without the floor (no independent matte mechanism exists
+      yet, so the mask would silently measure the opaque floor);
+    - floor with product rescale/offset (a full-scene render cannot be
+      repositioned the way a cut-out can).
+    - floor with the alpha mask pass disabled (full-scene finishing is
+      impossible without the independent product matte).
+    """
+    out = manifest.get("output", {})
+    film = out.get("film_transparent", True)
+    if not isinstance(film, bool):
+        raise ValueError(
+            "INVALID_OUTPUT_CONFIG: output.film_transparent must be a boolean "
+            f"(got: {film!r})")
+    floor = floor_requested(manifest)
+    if floor and film:
+        raise ValueError(
+            "FLOOR_REQUIRES_OPAQUE_FILM: lighting.floor.enabled=true needs "
+            "output.film_transparent=false - the floor must be baked into the "
+            "beauty pass.")
+    if not floor and not film:
+        raise ValueError(
+            "OPAQUE_NON_FLOOR_UNSUPPORTED: output.film_transparent=false "
+            "without lighting.floor.enabled=true has no independent matte "
+            "mechanism; enable the floor or keep film_transparent=true.")
+    if floor:
+        comp = manifest.get("compositing", {})
+        scale = comp.get("product_scale", 1.0)
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) \
+                or scale != 1.0:
+            raise ValueError(
+                "FLOOR_REQUIRES_UNIT_PRODUCT_SCALE: a full-scene render cannot "
+                f"be repositioned like a cut-out (product_scale={scale!r}).")
+        off_px = comp.get("product_offset_px", (0, 0))
+        off_pct = comp.get("product_offset_pct", (0, 0))
+
+        def _zero(seq):
+            return (isinstance(seq, (list, tuple)) and len(seq) == 2
+                    and all(v == 0 for v in seq))
+
+        if not _zero(off_px) or not _zero(off_pct):
+            raise ValueError(
+                "FLOOR_REQUIRES_ZERO_PRODUCT_OFFSET: a full-scene render "
+                f"cannot be repositioned (offset_px={off_px!r}, "
+                f"offset_pct={off_pct!r}).")
+        passes = out.get("passes") or {}
+        if passes.get("alpha_mask", True) is False:
+            raise ValueError(
+                "FLOOR_REQUIRES_ALPHA_MASK: floor mode finishes from the "
+                "independently rendered product matte; "
+                "output.passes.alpha_mask=false cannot produce it and the "
+                "job could never finish. Keep alpha_mask enabled or disable "
+                "the floor.")
+    return floor
+
+
+def _visible_product_ground():
+    """World-space min-z and x/y centre of the visible product meshes.
+
+    The studio floor seats at the machine's actual ground contact. A native
+    .blend is opened with get_scene_bounds() - nothing re-normalises it to
+    z=0 the way a GLB import is - so a floor hardcoded at z=0 could float
+    above or slice through the product. Ground slabs the hide pass removed
+    (hide_render=True) are excluded: the floor must meet the PRODUCT, not the
+    CAD file's own scenery. Outside Blender (unit-test doubles) the transform
+    degrades to a translation-only approximation; inside Blender the full
+    matrix is used.
+    """
+    min_x = min_y = min_z = math.inf
+    max_x = max_y = -math.inf
+    found = False
+    for obj in bpy.context.scene.objects:
+        if getattr(obj, "type", None) != "MESH" or obj.hide_render \
+                or obj.name in (FLOOR_OBJECT_NAME, "GroundShadowCatcher"):
+            continue
+        for corner in obj.bound_box:
+            try:
+                if mathutils is not None:
+                    v = obj.matrix_world @ mathutils.Vector(corner)
+                    wx, wy, wz = v.x, v.y, v.z
+                else:
+                    t = obj.matrix_world.translation
+                    wx, wy, wz = (corner[0] + t.x, corner[1] + t.y,
+                                  corner[2] + t.z)
+            except Exception:
+                continue
+            found = True
+            min_x, max_x = min(min_x, wx), max(max_x, wx)
+            min_y, max_y = min(min_y, wy), max(max_y, wy)
+            min_z = min(min_z, wz)
+    if not found:
+        return None
+    return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, min_z)
+
+
+FLOOR_EDGE_MARGIN_RATIO = 0.05
+
+
+def _camera_corner_rays(scene):
+    """(corner rays, camera origin, normalized forward) for the frame.
+
+    Uses the ACTUAL camera: view_frame(scene=scene) honours the final render
+    resolution and sensor fit, and camera.matrix_world the final transform -
+    so the bound covers what the sensor really sees, not a reconstructed
+    approximation. Perspective rays originate at the camera location;
+    orthographic rays originate at the transformed frame corners and run
+    along the camera forward (-Z) axis. Anything else is rejected clearly
+    instead of guessed at.
+
+    Returns (rays, camera_origin, camera_forward) where rays are
+    (origin_xyz, direction_xyz) tuples and camera_forward is the NORMALIZED
+    world -Z axis of the actual matrix, so downstream axial-depth checks are
+    immune to scale baked into the camera matrix. The camera origin is the
+    object's translation (the camera centre) for BOTH projection types:
+    orthographic clipping is measured from the camera centre, not from the
+    corner-ray starting points.
+    """
+    camera = getattr(scene, "camera", None)
+    if camera is None:
+        raise RuntimeError(
+            "FLOOR_CAMERA_MISSING: floor mode needs a scene camera to derive "
+            "the plane extent; none was set.")
+    cam_data = camera.data
+    cam_type = getattr(cam_data, "type", "PERSP")
+    # setup_camera assigns location/rotation_euler, but matrix_world only
+    # reflects the last depsgraph evaluation - identity for a freshly created
+    # camera object. Any operator between setup_camera and here can evaluate
+    # the depsgraph implicitly, which hid this on earlier successful renders;
+    # run2 az42 hit the floor gate first, read the stale identity (camera at
+    # the origin, below floor z), and failed FLOOR_BEHIND_CAMERA. Force the
+    # update BEFORE reading the matrix so the bound always comes from the
+    # actual placed transform. bpy is None in unit-test fakes without Blender.
+    if bpy is not None:
+        try:
+            bpy.context.view_layer.update()
+        except AttributeError:
+            pass
+    matrix = camera.matrix_world
+    origin_v = matrix.translation
+    camera_origin = (origin_v.x, origin_v.y, origin_v.z)
+    z_col = matrix.col[2]
+    raw_forward = (-z_col.x, -z_col.y, -z_col.z)
+    forward_len = math.sqrt(raw_forward[0] ** 2 + raw_forward[1] ** 2
+                            + raw_forward[2] ** 2)
+    if forward_len <= 0.0:
+        raise RuntimeError(
+            "FLOOR_CAMERA_DEGENERATE: camera forward axis is zero-length; "
+            "cannot derive axial depth for the floor bound.")
+    camera_forward = (raw_forward[0] / forward_len,
+                      raw_forward[1] / forward_len,
+                      raw_forward[2] / forward_len)
+    try:
+        corners = cam_data.view_frame(scene=scene)
+    except Exception as exc:
+        raise RuntimeError(
+ f"FLOOR_VIEW_FRAME_FAILED: could not read the camera view frame: {exc}") from exc
+    if cam_type == 'PERSP':
+        rays = []
+        for corner in corners:
+            world = matrix @ corner
+            rays.append((camera_origin,
+                         (world.x - camera_origin[0],
+                          world.y - camera_origin[1],
+                          world.z - camera_origin[2])))
+        return rays, camera_origin, camera_forward
+    if cam_type == 'ORTHO':
+        rays = []
+        for corner in corners:
+            world = matrix @ corner
+            rays.append(((world.x, world.y, world.z), camera_forward))
+        return rays, camera_origin, camera_forward
+    raise RuntimeError(
+        f"FLOOR_CAMERA_UNSUPPORTED: camera type {cam_type!r} cannot be bounded "
+        f"analytically; only PERSP and ORTHO cameras are supported in floor "
+        f"mode.")
+
+
+def required_floor_half_extent(corner_rays, floor_center,
+                               camera_origin, camera_forward,
+                               clip_end=200.0, aperture_radius_m=0.0,
+                               focus_distance_m=0.0):
+    """Half-extent needed so the floor covers every frame-corner ground hit.
+
+    Pure geometry: corner_rays is an iterable of (origin_xyz, direction_xyz)
+    float tuples in world space, floor_center the plane's (x, y, z). For each
+    ray the intersection with the ground plane z=floor_z is solved
+    analytically (t = (floor_z - origin_z) / direction_z). The parameter t
+    is scale-bearing and never used directly as a distance: the clip and
+    DOF metrics use the hit's AXIAL DEPTH, the projection of
+    (hit - camera_origin) onto the normalized camera_forward - exactly what
+    Blender's clip_end measures. camera_origin/camera_forward come from the
+    actual camera matrix (see _camera_corner_rays). Directions may carry any
+    positive scale: direction*0.1 and direction*10 give identical extent and
+    clipping results. Any ray that points at or above the horizon
+    (direction_z >= 0), hits behind the camera (t <= 0), or lands
+    at/beyond clip_end axially fails loudly - a finite
+    plane cannot cover those frames, and silently sizing an enormous
+    arbitrary one would hide an owner look decision (neutral world colour
+    vs a real cyclorama).
+
+    The returned half-extent is the max Chebyshev x/y distance of a hit from
+    the plane centre, grown by a small conservative margin (5%) plus, when
+    depth of field is on, the defocus blur disc radius at the hit's axial
+    depth (aperture_radius_m * |depth - focus| / focus) so the blurred far
+    edge still lands on geometry.
+    """
+    center_x, center_y, floor_z = floor_center
+    half_extent = 0.0
+    fwd_x, fwd_y, fwd_z = camera_forward
+    for index, (origin, direction) in enumerate(corner_rays):
+        dz = direction[2]
+        if dz >= 0.0:
+            raise RuntimeError(
+                f"FLOOR_HORIZON_IN_FRAME: frame corner {index} ray points at "
+                f"or above the horizon (direction_z={dz:.6f} >= 0); no finite "
+                f"floor plane covers the frame. Owner decision needed: neutral "
+                f"world colour vs a real cyclorama.")
+        t = (floor_z - origin[2]) / dz
+        if t <= 0.0:
+            raise RuntimeError(
+                f"FLOOR_BEHIND_CAMERA: frame corner {index} ground "
+                f"intersection is behind the camera (t={t:.3f} <= 0; camera "
+                f"at/below the floor plane?).")
+        hit_x = origin[0] + t * direction[0]
+        hit_y = origin[1] + t * direction[1]
+        hit_z = origin[2] + t * direction[2]
+        axial_depth = ((hit_x - camera_origin[0]) * fwd_x
+                       + (hit_y - camera_origin[1]) * fwd_y
+                       + (hit_z - camera_origin[2]) * fwd_z)
+        if axial_depth >= clip_end:
+            raise RuntimeError(
+                f"FLOOR_EDGE_BEYOND_CLIP_END: frame corner {index} ground hit "
+                f"is at axial depth {axial_depth:.2f} m (measured along the "
+                f"normalized camera forward axis), at/beyond the camera "
+                f"clip_end of {clip_end:.2f} m; the far floor edge would be "
+                f"clipped. Raise clip_end or steepen the camera.")
+        extent = max(abs(hit_x - center_x), abs(hit_y - center_y))
+        extent *= (1.0 + FLOOR_EDGE_MARGIN_RATIO)
+        if aperture_radius_m > 0.0 and focus_distance_m > 0.0:
+            extent += (aperture_radius_m * abs(axial_depth - focus_distance_m)
+                       / focus_distance_m)
+        half_extent = max(half_extent, extent)
+    return half_extent
+
+
+def build_studio_floor(radius: float, scene=None):
+    """Create the neutral studio floor plane and hold its direct reference.
+
+    Called AFTER the ground-keyword hide pass (so the repo's own ground
+    defences cannot eat it) and AFTER the photorealism pass (so no generic
+    material pass - CAD polish, bevel injection - can touch its fixed neutral
+    material). The size keeps the same product-radius rule only as a MINIMUM:
+    the real size is derived per frame from the actual camera's frame-corner
+    rays intersected analytically with the ground plane (see
+    required_floor_half_extent), so the far edge always lands beyond the
+    visible frame. The PLACEMENT comes from the product's measured ground
+    bounds, never from an assumed z=0. The material is fixed and neutral by
+    design - the only floor knob is on/off, and product materials are never
+    touched.
+    """
+    if scene is None:
+        scene = bpy.context.scene
+    placement = _visible_product_ground() or (0.0, 0.0, 0.0)
+    legacy_min = max(radius * 14.0, 2.0)
+    # No silent legacy fallback: without a scene camera the plane cannot be
+    # sized to the visible frame, and a quietly small plane is exactly the
+    # far-edge artifact floor mode exists to prevent. _camera_corner_rays
+    # raises FLOOR_CAMERA_MISSING loudly in that case.
+    corner_rays, camera_origin, camera_forward = _camera_corner_rays(scene)
+    cam_data = scene.camera.data
+    clip_end = float(getattr(cam_data, "clip_end", 200.0) or 200.0)
+    aperture_radius_m = focus_distance_m = 0.0
+    dof = getattr(cam_data, "dof", None)
+    if dof is not None and getattr(dof, "use_dof", False):
+        f_stop = float(getattr(dof, "aperture_fstop", 0.0) or 0.0)
+        lens_mm = float(getattr(cam_data, "lens", 0.0) or 0.0)
+        if f_stop > 0.0 and lens_mm > 0.0:
+            aperture_radius_m = (lens_mm / (2.0 * f_stop)) / 1000.0
+        focus_distance_m = float(getattr(dof, "focus_distance", 0.0) or 0.0)
+    derived_half = required_floor_half_extent(
+        corner_rays, placement, camera_origin, camera_forward,
+        clip_end=clip_end, aperture_radius_m=aperture_radius_m,
+        focus_distance_m=focus_distance_m)
+    derived_size = 2.0 * derived_half
+    size = max(legacy_min, derived_size)
+    provenance = (f"derived {derived_size:.2f} m from camera frame "
+                  f"corners vs legacy minimum {legacy_min:.2f} m")
+    bpy.ops.mesh.primitive_plane_add(size=size, location=placement)
+    floor = bpy.context.active_object
+    floor.name = FLOOR_OBJECT_NAME
+    mat = bpy.data.materials.new(name=FLOOR_MATERIAL_NAME)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = hex_to_linear_rgb(
+            FLOOR_COLOR_HEX)
+        bsdf.inputs["Roughness"].default_value = FLOOR_ROUGHNESS
+    floor.data.materials.clear()
+    floor.data.materials.append(mat)
+    print(f"[MSP Render] Studio floor created: {FLOOR_OBJECT_NAME} "
+          f"(size {size:.2f} m [{provenance}], seated at product ground "
+          f"z={placement[2]:.3f} m, neutral matte finish).")
+    return floor
+
+
 def apply_color_management(scene, color_spec: Dict[str, Any]):
     vs = scene.view_settings
     try:
@@ -1066,7 +1413,7 @@ def _assert_matte_matches(mask_path, alpha):
             f"MATTE_ALPHA_MISMATCH: {mask_path} differs from beauty alpha by {worst:.4f}")
 
 
-def write_matte_pass(output_dir: str):
+def write_matte_pass(output_dir: str, source_filename: str = "beauty.png"):
     """
     Writes mask.png (the alpha matte) next to beauty.png.
 
@@ -1077,9 +1424,10 @@ def write_matte_pass(output_dir: str):
     more predictable to split it out directly than to rebuild a node graph that
     changes shape every Blender release.
     """
-    beauty = os.path.join(output_dir, "beauty.png")
+    beauty = os.path.join(output_dir, source_filename)
     if not os.path.exists(beauty):
-        raise RuntimeError(f"MISSING_BEAUTY: required alpha matte has no beauty source: {beauty}")
+        raise RuntimeError(
+            f"MISSING_BEAUTY: required alpha matte has no beauty source: {beauty}")
     mask_path = os.path.join(output_dir, "mask.png")
     img = bpy.data.images.load(beauty, check_existing=False)
     try:
@@ -1127,8 +1475,21 @@ def _build_hash_text(value: Any, default: str = "unknown") -> str:
 
 def _render_report(enabled_compute_devices: list, cpu_in_mix: bool,
                    prepare_seconds: float, render_seconds: float,
-                   total_seconds: float) -> Dict[str, Any]:
+                   total_seconds: float,
+                   beauty_render_seconds: Optional[float] = None,
+                   matte_render_seconds: Optional[float] = None) -> Dict[str, Any]:
     """The worker-side render report consumed by the remote-job contract."""
+    timings: Dict[str, Any] = {
+        "prepare": max(0.0, prepare_seconds),
+        "render": max(0.0, render_seconds),
+        "total": max(0.0, total_seconds),
+    }
+    # Floor mode names its two paid passes explicitly; every legacy report
+    # keeps its exact historical shape (no extra keys when not floor mode).
+    if beauty_render_seconds is not None:
+        timings["beauty_render_seconds"] = max(0.0, beauty_render_seconds)
+    if matte_render_seconds is not None:
+        timings["matte_render_seconds"] = max(0.0, matte_render_seconds)
     return {
         "compute": {
             "enabled_devices": enabled_compute_devices,
@@ -1143,17 +1504,112 @@ def _render_report(enabled_compute_devices: list, cpu_in_mix: bool,
             "image": os.environ.get("MSP_IMAGE_ID", "unknown"),
             "build": _build_hash_text(getattr(bpy.app, "build_hash", None)),
         },
-        "timings": {
-            "prepare": max(0.0, prepare_seconds),
-            "render": max(0.0, render_seconds),
-            "total": max(0.0, total_seconds),
-        },
+        "timings": timings,
     }
+
+
+def pin_render_seed(scene) -> Optional[Dict[str, Any]]:
+    """Pin the Cycles seed for floor mode's paired renders; returns saved state.
+
+    The beauty frame and its floor-hidden matte must share one stochastic
+    state - pinning only the matte (as an earlier draft did) leaves the two
+    passes sampled from different noise. The seed is pinned for BOTH renders
+    in floor mode only; restore_render_seed puts everything back, including
+    on failure.
+    """
+    cycles = getattr(scene, "cycles", None)
+    if cycles is None:
+        return None
+    saved = {"seed": getattr(cycles, "seed", None),
+             "use_animated_seed": getattr(cycles, "use_animated_seed", None)}
+    try:
+        cycles.use_animated_seed = False
+        cycles.seed = 0
+    except Exception:
+        pass
+    return saved
+
+
+def restore_render_seed(scene, saved: Optional[Dict[str, Any]]) -> None:
+    """Undo pin_render_seed; safe with None (no pin was taken)."""
+    if not saved:
+        return
+    cycles = getattr(scene, "cycles", None)
+    for attr, value in (("seed", saved["seed"]),
+                        ("use_animated_seed", saved["use_animated_seed"])):
+        if value is not None:
+            try:
+                setattr(cycles, attr, value)
+            except Exception:
+                pass
+
+
+def render_floor_hidden_matte(scene, floor_obj, output_dir: str) -> float:
+    """Second render: product-only cutout with the floor hidden.
+
+    Identical camera, resolution, DOF and product graph - the ONLY mutations
+    are the ones a floor-hidden transparent matte needs (film transparent
+    again, floor hidden, seed pinned, denoising off: denoising acts on colour
+    and the matte consumes alpha only). Every mutated piece of render state is
+    restored in a finally block, including on failure, and the opaque beauty
+    file is never touched.
+    """
+    render = scene.render
+    cycles = getattr(scene, "cycles", None)
+    is_cycles = getattr(render, "engine", None) == "CYCLES"
+    saved = {
+        "filepath": render.filepath,
+        "film_transparent": render.film_transparent,
+        "floor_hidden": floor_obj.hide_render,
+        "samples": getattr(cycles, "samples", None),
+        "seed": getattr(cycles, "seed", None),
+        "animated_seed": getattr(cycles, "use_animated_seed", None),
+        "denoising": getattr(cycles, "use_denoising", None),
+    }
+    try:
+        render.filepath = os.path.join(output_dir, "beauty-matte.png")
+        render.film_transparent = True
+        floor_obj.hide_render = True
+        if cycles is not None and is_cycles:
+            # Pin the seed: the beauty frame and its matte must not carry
+            # different stochastic states, and an animated seed would make
+            # the second pass a different sample of the same noise.
+            try:
+                cycles.use_animated_seed = False
+                cycles.seed = 0
+                cycles.use_denoising = False
+            except Exception:
+                pass
+        print(f"[MSP Render] Rendering product-only matte pass: "
+              f"{render.filepath} (floor hidden, seed pinned, denoise off).")
+        started = time.monotonic()
+        bpy.ops.render.render(write_still=True)
+        seconds = time.monotonic() - started
+        # The cutout is split from the matte render's own alpha - never from
+        # the opaque beauty, whose alpha would name the whole floor.
+        write_matte_pass(output_dir, source_filename="beauty-matte.png")
+        return seconds
+    finally:
+        render.filepath = saved["filepath"]
+        render.film_transparent = saved["film_transparent"]
+        floor_obj.hide_render = saved["floor_hidden"]
+        if cycles is not None:
+            for attr, value in (("samples", saved["samples"]),
+                                ("seed", saved["seed"]),
+                                ("use_animated_seed", saved["animated_seed"]),
+                                ("use_denoising", saved["denoising"])):
+                if value is not None:
+                    try:
+                        setattr(cycles, attr, value)
+                    except Exception:
+                        pass
 
 
 def execute_render_job(manifest: Dict[str, Any]):
     """Main execution function inside Blender."""
     _t04_started = time.monotonic()
+    # Cheap, loud manifest validation before anything expensive happens.
+    floor_mode_on = validate_output_config(manifest)
     cad_info = manifest["cad_source"]
     file_path = cad_info["file_path"]
     format_type = cad_info.get("format", "").lower()
@@ -1281,6 +1737,11 @@ def execute_render_job(manifest: Dict[str, Any]):
     # Lighting
     lighting_spec = manifest.get("lighting", {})
     want_shadow_catcher = lighting_spec.get("shadow_catcher", False)
+
+    # The studio floor is created AFTER the photorealism pass (see below):
+    # the ground-keyword hide pass above must never eat it, no generic
+    # material pass may touch its fixed neutral finish, and the lighting
+    # branches only need to know floor mode is on to suppress the catcher.
     
     # Remove any stray GroundShadowCatcher objects to ensure clean transparent alpha
     for obj in list(bpy.context.scene.objects):
@@ -1309,7 +1770,7 @@ def execute_render_job(manifest: Dict[str, Any]):
             direction = mathutils.Vector((center.x, center.y, center.z * 0.7)) - fill_light_obj.location
             fill_light_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
             bpy.context.scene.collection.objects.link(fill_light_obj)
-        if want_shadow_catcher:
+        if want_shadow_catcher and not floor_mode_on:
             bpy.ops.mesh.primitive_plane_add(size=radius * 12.0, location=(0, 0, 0))
             plane = bpy.context.active_object
             plane.name = "GroundShadowCatcher"
@@ -1321,14 +1782,15 @@ def execute_render_job(manifest: Dict[str, Any]):
             plane.data.materials.clear()
             mute_catcher_bounce(plane)
     else:
-        setup_lighting(lighting_spec, center, radius)
+        setup_lighting(lighting_spec, center, radius,
+                       suppress_shadow_catcher=floor_mode_on)
 
     out_spec = manifest.get("output", {})
     scene = bpy.context.scene
     scene.render.engine = out_spec.get("engine", "CYCLES")
     scene.render.resolution_x = out_spec.get("width", 1920)
     scene.render.resolution_y = out_spec.get("height", 1080)
-    scene.render.film_transparent = True
+    scene.render.film_transparent = film_transparent_for(out_spec)
     scene.render.image_settings.file_format = 'PNG'
     scene.render.image_settings.color_mode = 'RGBA'
 
@@ -1407,20 +1869,53 @@ def execute_render_job(manifest: Dict[str, Any]):
     except Exception as e:
         print(f"[MSP Render] WARNING: photoreal pass failed: {e}")
 
-    print(f"[MSP Render] Starting render for job {manifest.get('job_id')}...")
-    _t04_render_started = time.monotonic()
-    bpy.ops.render.render(write_still=True)
-    print(f"[MSP Render] Beauty pass written: {scene.render.filepath}")
+    # The studio floor is created HERE - after the ground-keyword hide pass
+    # (so the repo's own ground defences cannot eat it) and after the
+    # photorealism pass (so CAD polish / bevel injection never touches its
+    # fixed neutral material). It seats at the product's measured ground
+    # bounds, not an assumed z=0: a native .blend is never re-normalised.
+    floor_obj = (build_studio_floor(radius, scene=scene)
+                 if floor_mode_on else None)
 
-    if out_spec.get("passes", {}).get("alpha_mask", True):
-        write_matte_pass(output_dir)
+    print(f"[MSP Render] Starting render for job {manifest.get('job_id')}...")
+    # Floor mode pins the seed for BOTH renders so the beauty frame and its
+    # matte share one stochastic state; restored even on failure.
+    _t04_seed_state = pin_render_seed(scene) if floor_mode_on else None
+    _t04_beauty_seconds = None
+    _t04_matte_seconds = None
+    _t04_render_started = time.monotonic()
+    try:
+        _t04_beauty_started = time.monotonic()
+        bpy.ops.render.render(write_still=True)
+        if floor_mode_on:
+            # A measured wall time, never a derived remainder: the floor
+            # report must name what each paid pass actually cost.
+            _t04_beauty_seconds = time.monotonic() - _t04_beauty_started
+        print(f"[MSP Render] Beauty pass written: {scene.render.filepath}")
+
+        if out_spec.get("passes", {}).get("alpha_mask", True):
+            if floor_mode_on and floor_obj is not None:
+                # Floor mode: mask.png must describe the PRODUCT, and the
+                # opaque beauty's alpha describes the whole lit scene. The
+                # second floor-hidden render supplies the independent cutout.
+                _t04_matte_seconds = render_floor_hidden_matte(
+                    scene, floor_obj, output_dir)
+            else:
+                write_matte_pass(output_dir)
+    finally:
+        if _t04_seed_state is not None:
+            restore_render_seed(scene, _t04_seed_state)
 
     if "require_gpu" in manifest:
+        # Spans BOTH passes plus matte extraction in floor mode, so the
+        # legacy render_seconds contract never undercounts paid work.
         _t04_render_seconds = time.monotonic() - _t04_render_started
         _t04_total_seconds = time.monotonic() - _t04_started
         _t04_report = _render_report(enabled_compute_devices, cpu_in_mix,
                                      _t04_render_started - _t04_started,
-                                     _t04_render_seconds, _t04_total_seconds)
+                                     _t04_render_seconds, _t04_total_seconds,
+                                     beauty_render_seconds=_t04_beauty_seconds,
+                                     matte_render_seconds=_t04_matte_seconds)
         # Serialise fully before opening the file. Streaming straight into the
         # handle means an unserialisable value writes bytes up to the point it
         # fails and leaves a truncated, invalid report on disk - which
