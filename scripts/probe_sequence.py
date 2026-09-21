@@ -105,6 +105,43 @@ def psnr(a, b):
     return float("inf") if mse == 0 else 10.0 * np.log10(255.0 ** 2 / mse)
 
 
+def encoded_frame_count(video_path) -> int:
+    """Frames actually present in the encoded file, via ffprobe."""
+    def probe(ffprobe_args):
+        result = subprocess.run(ffprobe_args, capture_output=True, text=True)
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            return None
+
+    count = probe(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                   "-show_entries", "stream=nb_frames",
+                   "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)])
+    if count is None:
+        # nb_frames is legitimately N/A for some containers; count then.
+        count = probe(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                       "-count_frames", "-show_entries", "stream=nb_read_frames",
+                       "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)])
+    if count is None:
+        raise RuntimeError(f"FFPROBE_FRAME_COUNT_UNAVAILABLE: {video_path}")
+    return count
+
+
+def frame_azimuth(run_dir, frame_dir) -> float:
+    """The frame's true azimuth from its own manifest, not its rounded label."""
+    frame_name = frame_dir.name[len("frame-"):]
+    manifest_path = Path(run_dir) / f"manifest-{frame_name}.json"
+    if not manifest_path.is_file():
+        # Older run directories predate per-frame manifests; the rounded
+        # directory label is then the best available value.
+        return float(frame_dir.name.split("az")[1])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        return float(manifest["camera"]["azimuth_deg"])
+    except KeyError:
+        raise RuntimeError(f"FRAME_AZIMUTH_UNAVAILABLE: {manifest_path}") from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -113,6 +150,9 @@ def main():
     parser.add_argument("--lens-grain", type=float, default=2.2)
     parser.add_argument("--framerate", type=int, default=12)
     parser.add_argument("--no-encode", action="store_true")
+    parser.add_argument("--expect-frames", type=int, default=None,
+                        help="declare the intended frame count up front; a "
+                             "short download or missing frame must not pass quietly")
     args = parser.parse_args()
     run_dir = args.run_dir.resolve()
     request, manifest = load_run(run_dir)
@@ -120,8 +160,9 @@ def main():
                    if k not in ("enabled", "background_plate")}
     plate = str(ROOT / manifest["compositing"]["background_plate"])
 
+    # Sort on the true azimuth: the integer label collides above 360 frames.
     frames = sorted((run_dir / "cloud").glob("frame-az*/beauty.png"),
-                    key=lambda p: int(p.parent.name.split("az")[1]))
+                    key=lambda p: frame_azimuth(run_dir, p.parent))
     if not frames:
         raise SystemExit("NO_FRAMES: no cloud/frame-az*/beauty.png under " + str(run_dir))
 
@@ -129,7 +170,7 @@ def main():
     pre_lens = []
     for index, beauty in enumerate(frames):
         frame_dir = beauty.parent
-        azimuth = int(frame_dir.name.split("az")[1])
+        azimuth = frame_azimuth(run_dir, frame_dir)
         azimuths.append(azimuth)
         pre_path = str(frame_dir / "composite-prelens.png")
         result = MSPCompositor.composite_asset(
@@ -167,6 +208,9 @@ def main():
 
     report = sequence_report(scalars, maes, digests, azimuths)
     report["frames"] = len(frames)
+    if args.expect_frames is not None and args.expect_frames != len(frames):
+        report["problems"].append(
+            f"FRAME_COUNT_NOT_AS_DECLARED: found {len(frames)} expected {args.expect_frames}")
     report["fidelity_gate_all_pass"] = all(r["fidelity_gate_pass"] for r in results)
     report["grain_deterministic"] = grain_deterministic
     if not grain_deterministic:
@@ -180,7 +224,7 @@ def main():
                 (beauty.parent / "composite-lens.png").read_bytes())
         video = run_dir / "turntable-loop.mp4"
         encode = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-stream_loop", "4",
+            ["ffmpeg", "-y", "-loglevel", "error",
              "-framerate", str(args.framerate), "-i", str(concat / "f%03d.png"),
              "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
              str(video)], capture_output=True, text=True)
@@ -188,6 +232,22 @@ def main():
             print(json.dumps({"status": "failed", "reason": "FFMPEG",
                               "stderr": encode.stderr[-500:]}))
             return 1
+        # One pass through unique frames: looping is the player's job (owner
+        # ruling 2026-09-20), so the encoded count must equal the source count.
+        report["unique_frame_count"] = len(frames)
+        try:
+            encoded = encoded_frame_count(video)
+        except (RuntimeError, OSError) as exc:
+            # The encode already succeeded and is paid for; losing the frame
+            # count must not discard the report's other measured gates.
+            encoded = None
+            report["encoded_frame_count"] = None
+            report["problems"].append(f"ENCODED_FRAME_COUNT_UNAVAILABLE: {exc}")
+        else:
+            report["encoded_frame_count"] = encoded
+        if encoded is not None and encoded != len(frames):
+            report["problems"].append(
+                f"ENCODED_FRAME_COUNT_MISMATCH: encoded {encoded} vs unique {len(frames)}")
         # Decode-back integrity on three sampled frames (section 7.5).
         decode = []
         for index in (0, len(frames) // 2, len(frames) - 1):

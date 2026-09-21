@@ -8,6 +8,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from composite_worker import MATTE_COVERAGE_CEILING
 from composite_worker import MSPCompositor
 
 
@@ -107,6 +108,46 @@ class TestCompositeIntegrityGates(unittest.TestCase):
             self.assertTrue(np.array_equal(
                 placed_np[:, :, :3][opaque], out_np[opaque]),
                 "Composite product pixels differ from the placed render.")
+
+    def test_normal_matte_passes_plausibility_unchanged(self):
+        """A product-sized matte sits far below the ceiling and leaves an
+        otherwise passing composite passing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prod_path, mask_path, bg_path = self._fixtures(tmpdir)
+            out_path = os.path.join(tmpdir, "comp.png")
+
+            res = MSPCompositor.composite_asset(
+                prod_path, bg_path, out_path,
+                mask_image_path=mask_path,
+                target_size=(self.W, self.H),
+            )
+
+            mask = np.array(Image.open(mask_path)) == 255
+            self.assertLess(float(mask.mean()), MATTE_COVERAGE_CEILING / 2.0)
+            self.assertTrue(res["matte_plausibility_pass"])
+            self.assertEqual(res["status"], "success")
+
+    def test_full_frame_matte_fails_the_plausibility_gate(self):
+        """A near-full-frame mask means the beauty alpha swallowed an opaque
+        floor; the result fails loudly instead of passing meaninglessly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prod_path, _, bg_path = self._fixtures(tmpdir)
+            mask = np.full((self.H, self.W), 255, dtype=np.uint8)
+            mask[0, 0] = 0
+            mask_path = os.path.join(tmpdir, "mask_full.png")
+            Image.fromarray(mask).save(mask_path)
+            out_path = os.path.join(tmpdir, "comp.png")
+
+            res = MSPCompositor.composite_asset(
+                prod_path, bg_path, out_path,
+                mask_image_path=mask_path,
+                target_size=(self.W, self.H),
+            )
+
+            self.assertFalse(res["matte_plausibility_pass"])
+            self.assertEqual(res["status"], "failed")
+            self.assertTrue(os.path.exists(res["output_path"]),
+                            "Failed gate must not discard the saved render.")
 
     def test_mismatched_mask_fails_the_gate_but_keeps_the_render(self):
         """A mask shifted off the product fails the gate; the file survives."""

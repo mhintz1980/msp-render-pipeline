@@ -718,3 +718,127 @@ Mark decided, and it supersedes the local-first framing above:
   sequencer exists. The 222 frame doubles as the first evidence that the
   two-map pattern holds the back-of-orbit lighting that section 6.2 measured
   collapsing to 36/255 under a single plate.
+
+---
+
+## 13. Batch 3 replanned, 2026-09-20 — split into 3a and 3b
+
+The 2026-09-20 handoff scoped batch 3 as a single task: "replace the flat
+composite backdrop with a real rendered floor." Reading the code before
+writing it found three collisions that make the floor a *second* task, not a
+first one, plus an owner ruling that outranks both. Batch 3 is therefore
+split. **3a is pure local Python with zero cloud spend; 3b is the floor and
+needs a measured dispatch.**
+
+### 13.1 Why the floor could not go first — the matte carries the floor
+
+The product matte is not a separate render pass. `write_matte_pass`
+(`render_worker.py:1069-1107`) loads the finished `beauty.png` and takes
+**channel 3 of its alpha** (`:1087`); `_assert_matte_matches` then proves the
+saved matte equals that alpha. The whole pipeline's notion of "product pixels"
+is "pixels where the beauty render is opaque", which works only because
+`scene.render.film_transparent = True` is hardcoded at `render_worker.py:1331`
+and nothing behind the machine is ever opaque.
+
+Put an opaque floor in the scene and the floor is opaque, so every floor pixel
+becomes "product". Three consequences, none of which fail loudly:
+
+1. **The T05 fidelity gate stops meaning what it says.** It compares
+   fully-opaque mask pixels against the reloaded save
+   (`composite_worker.py:294-307`). With a floor in the mask it still passes —
+   it is now also asserting the floor is unaltered, and no longer isolating
+   the machine. The gate that exists to guarantee marketing never retouched
+   the pump would be measuring the backdrop.
+2. **`create_contact_shadow` casts a shadow from the floor's silhouette**, not
+   the machine's — it takes the alpha mask as its only geometry input
+   (`composite_worker.py:52-60`).
+3. **The §7.4 coverage scalar goes blind.** Coverage is `mask.mean()`; a
+   floor-bearing matte pins it near 1.0, and the smooth-variation gate on
+   coverage then cannot detect a frame that lost the machine.
+
+All three *pass*. That is the danger: the failure mode is a green suite
+measuring the wrong thing, which is the same class of defect as the encoder
+bug described in §13.2 — a gate pointed at the wrong artifact.
+
+There is a fourth trap for whoever implements 3b: the ground-keyword hide pass
+(`render_worker.py:1247-1279`) runs **before** `setup_lighting` (`:1324`) and
+hides any mesh whose name contains `plane`, `plate`, `env`, `surface`, or that
+is a large flat slab near z=0. A floor plane must therefore be created after
+that pass (as `GroundShadowCatcher` already is) or it will be hidden by the
+repo's own defenses. And `film_transparent` is currently controlled by no
+manifest key at all.
+
+### 13.2 What 3a fixes — the ruling, and the gate that missed it
+
+Mark's 2026-09-20 ruling (recorded verbatim in `docs/rl300-parity.md`):
+**no delivered video contains duplicated frames.** One orbit is one pass
+through unique frames; looping is the player's job. A quality-check video
+spends its budget on more unique frames, never on repeats.
+
+The accepted artifact violated it because `scripts/probe_sequence.py:183`
+passed `-stream_loop 4` to ffmpeg — `ffprobe` measures `nb_frames=150`, 12 fps,
+12.5 s: 30 unique frames played five times.
+
+The §7.4 duplicate-frame gate ran and passed **correctly** — it digests the
+composited PNGs, which are genuinely all distinct. The duplication happened
+downstream at encode, and the §7.5 decode-back check sampled 0/mid/last, all
+inside the first pass. Deleting the flag fixes the instance; what makes it
+unrepeatable is asserting, **on the encoded file**, that its frame count
+equals the number of unique composited frames.
+
+3a scope (local, free, no Blender, no Modal):
+
+- `probe_sequence.py`: drop `-stream_loop`; add `encoded_frame_count()` via
+  `ffprobe` with an `nb_read_frames` fallback; gate
+  `ENCODED_FRAME_COUNT_MISMATCH`; add `--expect-frames` so a caller declares
+  the intended count up front.
+- `cloud_job_render.py`: add `orbit_azimuths(count, start)` generating one
+  orbit with no repeat of the start frame, and `reject_duplicate_azimuths()`
+  in preflight — a duplicate azimuth is a **billable** frame carrying no
+  information against the USD 30/month ceiling, so it must cost nothing.
+  Record `orbit` in `request.json`.
+- `composite_worker.py`: add `MATTE_COVERAGE_CEILING = 0.90` and a
+  `matte_plausibility_pass` gate folded into `gates_ok`. Grounding: every
+  measured product coverage in this pipeline sits near 0.42 (0.4197–0.4442
+  across a full orbit, §6.2 and §11), so 0.90 is more than double any
+  legitimate value and cannot fire on a real product matte — it fires exactly
+  when a matte has stopped describing the product, which is the in-scene-floor
+  signature. **This is the tripwire that makes 3b's central risk loud instead
+  of silent**, and it is why it ships before the floor rather than with it.
+
+No threshold is widened: the new frame-count check is an equality, and the
+35 dB decode floor, the 3× neighbour-outlier factor, IoU 0.98/0.995, MAE 0.01
+and p99 0.05 all stand unchanged.
+
+### 13.3 3b — the floor, still owner-relevant and now properly bounded
+
+Unchanged in goal: a real rendered floor under the machine, killing the
+machine-to-backdrop boundary artifact both vision reads flagged and making DOF
+believable by putting something behind the machine to blur. What 3a changes is
+that 3b can no longer do it silently wrong.
+
+3b must resolve, with numbers rather than assumption:
+
+1. **How the matte excludes the floor.** The floor is opaque, so alpha cannot
+   separate it. This needs a real mechanism — a dedicated object-index /
+   cryptomatte pass, or rendering the matte from a film-transparent pass with
+   the floor hidden — and `write_matte_pass` currently supports neither. This
+   is the actual engineering content of 3b and it was invisible in the
+   handoff's framing.
+2. **A manifest key for `film_transparent`**, since floor mode needs it false
+   and every existing job needs it true. Additive and defaulted so no accepted
+   hash moves.
+3. **Where the floor plane is created** — after the ground-keyword hide pass,
+   following the `GroundShadowCatcher` precedent, sized off the same radius
+   basis the worker actually used (§11's discarded-probe lesson: bounds mean
+   different things before and after the scene is dressed).
+4. **Whether `compositing.shadow_opacity` becomes redundant** in floor mode —
+   test, do not assume; the kept look uses 0.35.
+5. **Cost**, measured: one 2-frame probe dispatch (az 42 + 222, the standing
+   preview pair) against the +10–30% estimate, recorded in
+   `docs/cloud-smoke.md` per convention.
+
+Sequencing note: 3a's frame-count gate and orbit generator are also
+prerequisites for the T-V2 sequencer, which is the first thing that will
+render a 300-frame single orbit. Doing them now costs nothing and removes the
+chance that the first expensive shot duplicates frames.

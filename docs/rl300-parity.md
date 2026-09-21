@@ -1098,3 +1098,62 @@ well."*
   touch-ups that could raise realism. The first preview dispatch (azimuths
   42° and 222° of `jobs/rl300_04_studio-white.json`) is recorded in
   `docs/cloud-smoke.md`.
+
+## 2026-09-20 — owner acceptance: first motion artifact, and the no-duplicate-frames ruling
+
+Mark, shown `output/preview-turntable-batch2-20260920/batch2-turntable-loop.mp4`
+(30 cloud-rendered frames, azimuths 42–390 step 12°, the kept batch-1+2 look),
+ruled verbatim:
+
+> *"**We just completed the turntable animation last session … which i
+> approve.**"*
+
+**This is a recorded acceptance of the motion artifact** — the first accepted
+video deliverable in this pipeline. Scope: the look (DOF f/3.2, contact shadow
+0.35, deepened v2 sweep, vignette 0.45, bloom 0.3, grain 2.2), the orbit
+cadence, and the encode quality. It is **not** an acceptance of the file's
+frame layout (see below), and it converts no `awaiting_reference_acceptance`
+parity artifact.
+
+Mark's note, verbatim:
+
+> *"**in the future I would prefer not doing 3 identical orbits. I would
+> prefer to just loop a single orbit, or if for testing quality like that
+> video was supposed to do, I would prefer either single orbit with more
+> frames to allow for a better quality check for artifacts and other issues.
+> We should try and never duplicate frames.**"*
+
+**Standing ruling: no duplicated frames in any delivered video.** A delivered
+file contains one pass through its unique frames; seamless looping is the
+player's job (`loop` attribute), not the file's. When an artifact exists to
+*judge quality*, the frame budget buys **more unique frames on a single
+orbit**, never repeats of a shorter one.
+
+### The defect behind it, measured
+
+The repetition was the encoder's, not the sequencer's:
+`scripts/probe_sequence.py:183` passes `-stream_loop 4` to ffmpeg. Measured
+with `ffprobe` on the accepted file: **`nb_frames=150`, 12 fps, 12.5 s** — 30
+unique frames played **five** times. Mark undercounted (he saw three orbits);
+the defect is larger than the note claims, which strengthens the point rather
+than softening it. Frames 30–149 carry no information and account for 80% of
+the file.
+
+**Why the gates passed it — the reusable lesson.** The video brief §7.4
+already declares a duplicate-frame gate (*"no duplicate consecutive pixel
+digests"*), it ran, and it passed **correctly**: it inspects the composited
+PNGs on disk, where all 30 frames are genuinely distinct. The duplication was
+introduced *after* that gate, at encode. The §7.5 decode-back check does read
+the encoded file, but samples indices 0/15/29 — all inside the first pass — so
+it never looked at a repeated frame either.
+
+The sequence gates were therefore measuring the wrong artifact, which is
+precisely the failure mode §7.5 exists to prevent (*"gate the bytes the client
+will actually open"*). Deleting `-stream_loop` fixes this instance; what makes
+it unrepeatable is a gate asserting **the encoded file's frame count equals the
+number of unique composited frames**, measured on the encoded file with
+`ffprobe`. Both land in batch 3.
+
+No threshold is widened by any of this: the new frame-count gate is an
+equality, and the 35 dB decode PSNR floor and 3× neighbour-outlier factor are
+unchanged.

@@ -295,3 +295,85 @@ encoded the first motion artifact, `turntable-loop.mp4` (H.264 crf 18,
   stale 101.65 s/frame local figure); measured container time will be
   recorded from Modal's usage when it settles - the warm rate is now well
   known (~10.2 s/frame), so the true figure is near USD 0.18.
+
+### 2026-09-20 batch-3a: no-duplicate-frames ruling implemented — zero dispatch
+
+Recorded here because the convention is that *every* run is recorded, including
+the ones that spend nothing: **no Modal call was made, no frame was rendered,
+estimated and measured cost both USD 0.00.** Batch 3a is pure local Python.
+
+Trigger: Mark approved `batch2-turntable-loop.mp4` and ruled that no delivered
+video may contain duplicated frames (verbatim in `docs/rl300-parity.md`,
+2026-09-20 acceptance entry). The accepted file was `nb_frames=150` — 30 unique
+frames played five times — because `scripts/probe_sequence.py` passed
+`-stream_loop 4` to ffmpeg.
+
+Landed (see `docs/video-pipeline-brief.md` §13 for the reasoning and the 3a/3b
+split):
+
+- Encode is one pass; `encoded_frame_count()` reads the **encoded file** via
+  `ffprobe` (with an `nb_read_frames` fallback) and gates
+  `ENCODED_FRAME_COUNT_MISMATCH`. The pre-existing duplicate gate digests the
+  composited PNGs and passed correctly — it could never have caught a
+  duplication introduced downstream at encode.
+- `orbit_azimuths(count, start)` generates one orbit with no wrap-around repeat;
+  `reject_duplicate_azimuths()` runs in `frame_plan` preflight, **before any
+  billable call**, keyed on `frame_name()` — the frame label is the billing
+  unit, so two azimuths naming the same frame are one frame however different
+  the floats look. A duplicate azimuth now costs USD 0.00 instead of a full
+  frame that gets overwritten.
+- `--orbit N` on the dispatcher, mutually exclusive with `--azimuths`, recorded
+  as `orbit: {count, step_deg}` in `request.json`.
+- `MATTE_COVERAGE_CEILING = 0.90` + `matte_plausibility_pass` in the compositor:
+  the tripwire for batch 3b, where an opaque in-scene floor would otherwise
+  enter the alpha-derived matte as "product" and make three gates pass while
+  measuring nothing. Grounded on measured coverage near 0.42 (0.4197–0.4442
+  across a full orbit), so it cannot fire on a legitimate product matte.
+
+**Cost avoided, measured against this repo's own rates:** at the known warm L4
+marginal 10.2 s/frame and the recorded all-in USD 0.00030992/s, one duplicate
+frame that the preflight now rejects would have cost ~USD 0.0032 and produced
+nothing. The real saving is at shot scale: a 300-frame orbit mis-specified with
+a repeated azimuth previously rendered and silently discarded frames; and the
+encoder defect, had it reached a 300-frame shot, would have produced a 1500-frame
+file — 80% of it duplicated bytes.
+
+The duplicate check keys on `frame_name()` rather than the raw float **because
+the frame label is the billing unit** — it names the frame directory, the
+per-frame `job_id`, and the container output dir. Measured before that fix:
+`reject_duplicate_azimuths([42.0, 42.4])` returned clean while
+`frame_name(42.0) == frame_name(42.4) == "az42"`, so `--azimuths 42,42.4` would
+have dispatched two billable renders into one destination and the second would
+have overwritten the first — two frames paid for, one image. The modulo-360
+check is kept alongside the label key, so a same-pose repeat such as `[42, 402]`
+still fails even though its labels differ.
+
+**A measured ceiling this establishes: 360 frames per orbit.** `frame_name`
+rounds to whole degrees, so 400 unique azimuths collapse to 360 unique labels.
+`--orbit 400` now fails at preflight (`DUPLICATE_AZIMUTH: 46.5 repeats 45.6`)
+rather than paying for 40 frames that overwrite others. Orbits of 30, 100, 300
+and 360 all pass, so the T-V2 target of 300 frames at 1.2°/frame is unaffected.
+Past 360 frames the pipeline needs a finer frame label — a real change, not a
+threshold to widen.
+
+A second readback defect was fixed in the same round: `probe_sequence` recovered
+each frame's azimuth from the **rounded directory label**, so any orbit whose
+step is not a whole degree produced non-uniform steps and tripped
+`NON_UNIFORM_AZIMUTH_STEPS`. Measured: at 300 frames the true step is 1.200 but
+the label steps were {1, 2}, so a 300-frame shot — the T-V2 target — would have
+failed its own sequence gate. It now reads `camera.azimuth_deg` from the frame's
+own manifest (`frame_azimuth`), falling back to the label only for older run
+directories that predate per-frame manifests. Verified against the real batch-2
+run dir: `frame-az102` reads back 102.0.
+
+No threshold was widened. The new frame-count check is an equality; the 35 dB
+decode PSNR floor, the 3× neighbour-outlier factor, IoU 0.98/0.995, MAE 0.01 and
+p99 0.05 are unchanged.
+
+Delegation record (orchestration doctrine): implemented by `zai/glm-5.3-flash`
+via the ocx proxy — **proven** from 48 proxy-log rows resolving to
+`glm-5.3-flash`/provider `zai` inside the dispatch window, not from the CLI's
+own echo. Adversarially reviewed in fresh context by `deepseek/deepseek-flash`
+(different vendor family), which returned FIX-FIRST with two blockers; both were
+reproduced independently before being accepted, and a correction round followed.
+Details in the handoff.

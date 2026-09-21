@@ -84,6 +84,31 @@ def frame_manifest(manifest, azimuth_deg, container_output_dir):
     return frame
 
 
+def orbit_azimuths(count: int, start: float = 42.0) -> list[float]:
+    """`count` unique azimuths, one full orbit, no repeat of the start frame."""
+    if count < 2:
+        raise ValueError(f"BAD_ORBIT_COUNT: {count} (must be >= 2)")
+    step = 360.0 / count
+    # range(count), never count + 1: the wrap-around frame is the start frame.
+    return [round(start + i * step, 3) for i in range(count)]
+
+
+def reject_duplicate_azimuths(azimuths) -> None:
+    """Raise on any azimuth repeated modulo 360 - a duplicate billable frame."""
+    seen_mod, seen_labels = {}, {}
+    for azimuth in azimuths:
+        # The frame label is the billing unit (frame dir, job_id, output dir),
+        # so two azimuths that name the same frame are one frame however
+        # different the floats look.
+        key = frame_name(azimuth)
+        first = seen_labels.get(key, seen_mod.get(round(azimuth % 360.0, 3)))
+        if first is not None:
+            raise ValueError(f"DUPLICATE_AZIMUTH: {azimuth} repeats {first} modulo 360")
+        seen_labels[key] = azimuth
+        seen_mod[round(azimuth % 360.0, 3)] = azimuth
+    return None
+
+
 def apply_overrides(manifest, overrides):
     """Apply dotted-path=value overrides in place; unknown paths are errors.
 
@@ -121,6 +146,7 @@ def frame_plan(manifest_path, azimuths, overrides=None):
     manifest_path = Path(manifest_path).resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     apply_overrides(manifest, overrides)
+    reject_duplicate_azimuths(azimuths)
     hdri = manifest.get("lighting", {}).get("hdri_path")
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")
@@ -253,8 +279,11 @@ def main():
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=ROOT / "jobs/rl300_04_studio-white.json")
-    parser.add_argument("--azimuths", default="42",
+    parser.add_argument("--azimuths", default=None,
                         help="comma-separated camera azimuths; one Blender process per azimuth")
+    parser.add_argument("--orbit", type=int, default=None,
+                        help="render one full orbit of N unique azimuths; "
+                             "mutually exclusive with --azimuths")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gpu", default="L4")
     parser.add_argument("--set", action="append", default=[], dest="overrides",
@@ -263,7 +292,15 @@ def main():
                              "may repeat; recorded in request.json")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
-    azimuths = [float(value) for value in str(args.azimuths).split(",") if value.strip()]
+    if args.orbit is not None:
+        if args.azimuths is not None:
+            raise SystemExit("AZIMUTH_SOURCE_CONFLICT: --orbit and --azimuths "
+                             "are mutually exclusive")
+        azimuths = orbit_azimuths(args.orbit)
+    else:
+        azimuths = [float(value) for value in
+                    str(args.azimuths if args.azimuths is not None else "42").split(",")
+                    if value.strip()]
     plan = frame_plan(args.manifest, azimuths, args.overrides)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -274,6 +311,8 @@ def main():
     request = {
         "schema_version": 1,
         "job_id": plan["job_id"],
+        "orbit": ({"count": args.orbit, "step_deg": round(360.0 / args.orbit, 4)}
+                  if args.orbit is not None else None),
         "runtime": {"version": BLENDER_VERSION, "build": BLENDER_BUILD,
                     "archive_sha256": BLENDER_ARCHIVE_SHA256, "archive_url": url},
         "resources": {"gpu": args.gpu, "cpu": 4, "memory_mib": 16384, "timeout_seconds": 1200,

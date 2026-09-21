@@ -15,6 +15,14 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
 
+# Every measured product coverage sits near 0.42 (0.4197-0.4442 across a full
+# orbit, video-pipeline-brief.md sections 6.2 and 11), so 0.90 cannot fire on a
+# legitimate product matte; it fires when the matte has stopped describing the
+# product - the signature of an opaque in-scene floor leaking into the beauty
+# alpha that write_matte_pass reads.
+MATTE_COVERAGE_CEILING = 0.90
+
+
 class MSPCompositor:
     """
     Composites CAD renders and studio photos onto real-world backgrounds
@@ -292,6 +300,8 @@ class MSPCompositor:
         prod_np = np.array(prod_img.convert("RGB"))
         mask_np = np.array(mask)
         mask_binary = mask_np == 255
+        coverage = float(mask_binary.mean())
+        matte_plausibility_pass = coverage <= MATTE_COVERAGE_CEILING
         fidelity_gate_pass = False
         saved_check_pass = False
         max_diff, mean_diff = 0, 0.0
@@ -346,7 +356,7 @@ class MSPCompositor:
         left, top, right, bottom = cls._mask_bounds(mask)
         # None means the mask gate did not run - only a measured False fails.
         gates_ok = (fidelity_gate_pass and mask_gate_pass is not False
-                    and saved_check_pass)
+                    and saved_check_pass and matte_plausibility_pass)
 
         # --- Lens pass: only after the gates ----------------------------------
         # The gates above describe the composite the effects consume; the
@@ -375,6 +385,7 @@ class MSPCompositor:
             "fidelity_gate_pass": fidelity_gate_pass,
             "mask_gate_pass": mask_gate_pass,
             "saved_check_pass": saved_check_pass,
+            "matte_plausibility_pass": matte_plausibility_pass,
             "max_pixel_drift": max_diff,
             "mean_pixel_drift": mean_diff,
             "dimensions": final_comp.size,

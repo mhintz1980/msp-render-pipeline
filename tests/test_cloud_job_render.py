@@ -150,6 +150,74 @@ class EstimateTests(unittest.TestCase):
                          round((cloud.COLD_START_SECONDS + 203.3) * per_second, 4))
 
 
+class OrbitTests(unittest.TestCase):
+    def test_orbit_is_count_unique_azimuths_without_the_wrap_repeat(self):
+        for count in (2, 3, 30, 100, 300):
+            with self.subTest(count=count):
+                azimuths = cloud.orbit_azimuths(count)
+                self.assertEqual(len(azimuths), count)
+                keys = [round(a % 360.0, 3) for a in azimuths]
+                self.assertEqual(len(set(keys)), count)
+                self.assertNotEqual(keys[-1], keys[0])
+
+    def test_orbit_starts_at_the_declared_azimuth_with_uniform_steps(self):
+        azimuths = cloud.orbit_azimuths(30)
+        self.assertEqual(azimuths[0], 42.0)
+        steps = [round(b - a, 3) for a, b in zip(azimuths, azimuths[1:])]
+        self.assertEqual(set(steps), {round(360.0 / 30, 3)})
+
+    def test_counts_below_two_are_rejected(self):
+        for count in (0, 1, -3):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(ValueError, "^BAD_ORBIT_COUNT:"):
+                    cloud.orbit_azimuths(count)
+
+
+class RejectDuplicateAzimuthTests(unittest.TestCase):
+    def test_exact_repeat_raises(self):
+        with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+            cloud.reject_duplicate_azimuths([42.0, 222.0, 42.0])
+
+    def test_modulo_repeat_raises(self):
+        with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+            cloud.reject_duplicate_azimuths([42, 402])
+
+    def test_clean_list_returns_none(self):
+        self.assertIsNone(
+            cloud.reject_duplicate_azimuths(cloud.orbit_azimuths(30)))
+
+    def test_frame_plan_refuses_a_duplicate_before_any_billable_call(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, manifest_path = job_fixture(root)
+            with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+                cloud.frame_plan(manifest_path, [42.0, 42.0])
+
+    def test_two_azimuths_that_name_one_frame_are_a_duplicate(self):
+        # 42.0 and 42.4 both label frame-az42: the label is the billing unit,
+        # so the gate must key on it, not on the raw floats.
+        self.assertTrue(cloud.frame_name(42.0) == cloud.frame_name(42.4))
+        with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+            cloud.reject_duplicate_azimuths([42.0, 42.4])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, manifest_path = job_fixture(root)
+            with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+                cloud.frame_plan(manifest_path, [42.0, 42.4])
+
+    def test_genuinely_distinct_azimuths_still_pass(self):
+        self.assertIsNone(cloud.reject_duplicate_azimuths([42.0, 43.0]))
+
+    def test_whole_orbits_survive_the_validator_except_overfull_ones(self):
+        for count in (30, 100, 300, 360):
+            with self.subTest(count=count):
+                self.assertIsNone(
+                    cloud.reject_duplicate_azimuths(cloud.orbit_azimuths(count)))
+        # 400 frames cannot have unique integer labels: collisions are real.
+        with self.assertRaisesRegex(ValueError, "^DUPLICATE_AZIMUTH:"):
+            cloud.reject_duplicate_azimuths(cloud.orbit_azimuths(400))
+
+
 class CommandTests(unittest.TestCase):
     def test_blender_command_carries_the_proven_flag_set(self):
         command = cloud.blender_command("/input/manifest-az42.json")
