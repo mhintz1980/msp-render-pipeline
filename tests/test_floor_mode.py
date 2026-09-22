@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -443,8 +444,9 @@ class FloorRenderWorkerTests(unittest.TestCase):
                 _V(0, 0, 10))
             floor = worker.build_studio_floor(1.5, scene=_FakeScene(steep))
             self.assertEqual(floor.name, "MSP_StudioFloor")
-            size = bpy.ops.mesh.primitive_plane_add.call_args_list[0].kwargs["size"]
-            self.assertAlmostEqual(size, 1.5 * 14.0)
+            # The cyc is built with from_pydata; the floor build itself
+            # makes zero primitive_plane_add calls.
+            self.assertEqual(bpy.ops.mesh.primitive_plane_add.call_count, 0)
             plane_calls = bpy.ops.mesh.primitive_plane_add.call_count
             worker.setup_lighting(
                 {"preset": "studio_white", "shadow_catcher": True},
@@ -458,6 +460,21 @@ class FloorRenderWorkerTests(unittest.TestCase):
             # Unsuppressed: the catcher plane is built as before.
             self.assertEqual(bpy.ops.mesh.primitive_plane_add.call_count,
                              plane_calls + 1)
+
+    def test_invalid_cyc_mesh_raises_loudly(self):
+        worker = self._worker()
+        bpy = mock.MagicMock()
+        bpy.data.objects.get.return_value = None
+        bpy.context.scene.objects = []
+        mesh = bpy.data.meshes.new.return_value
+        mesh.validate.return_value = True
+        steep = _FakeCamera(
+            _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10),
+                          _V(-1, 1, -10), _V(1, 1, -10)]),
+            _V(0, 0, 10))
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(RuntimeError, "CYC_MESH_INVALID"):
+                worker.build_studio_floor(1.5, scene=_FakeScene(steep))
 
     def test_matte_render_restores_all_state_even_on_failure(self):
         worker = self._worker()
@@ -550,8 +567,13 @@ class FloorRenderWorkerTests(unittest.TestCase):
                               _V(-1, 1, -10), _V(1, 1, -10)]),
                 _V(0, 0, 10))
             worker.build_studio_floor(1.5, scene=_FakeScene(steep))
-        kwargs = bpy.ops.mesh.primitive_plane_add.call_args.kwargs
-        self.assertEqual(kwargs["location"], (0.5, -0.25, -0.3))
+        verts = (bpy.data.meshes.new.return_value.from_pydata.call_args.args[0])
+        # The disc seats exactly at the measured product ground, centred on it.
+        self.assertAlmostEqual(min(v[2] for v in verts), -0.3)
+        self.assertAlmostEqual(
+            sum(v[0] for v in verts) / len(verts), 0.5)
+        self.assertAlmostEqual(
+            sum(v[1] for v in verts) / len(verts), -0.25)
 
 
 class _V:
@@ -650,7 +672,7 @@ class FloorCameraMatrixFreshnessTests(unittest.TestCase):
 
 
 class FloorGeometricBoundTests(unittest.TestCase):
-    """Pure geometry: the plane must cover every frame-corner ground hit."""
+    """Pure geometry: the cyc disc/wall must cover every frame-corner ray."""
 
     @staticmethod
     def _worker():
@@ -663,14 +685,15 @@ class FloorGeometricBoundTests(unittest.TestCase):
         # hits z=0 at t=10, i.e. (±10,±10,0).
         rays = [((0.0, 0.0, 10.0), (sx, sy, -1.0))
                 for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
-        half = worker.required_floor_half_extent(
+        radius = worker.required_floor_radius(
             rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
-        self.assertAlmostEqual(half, 10.0 * 1.05)
-        # Plane centred off the hit cluster: Chebyshev distance from the
-        # centre grows, not the raw hit magnitude.
-        half = worker.required_floor_half_extent(
+        # Euclidean radial metric: the coverage surface is a disc.
+        self.assertAlmostEqual(radius, 10.0 * math.sqrt(2.0) * 1.05)
+        # Disc centred off the hit cluster: the farthest hit sits at
+        # radial (12, 11) from the centre.
+        radius = worker.required_floor_radius(
             rays, (2.0, -1.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
-        self.assertAlmostEqual(half, 12.0 * 1.05)
+        self.assertAlmostEqual(radius, math.hypot(12.0, 11.0) * 1.05)
 
     def test_direction_scale_leaves_extent_and_clipping_identical(self):
         """The ray parameter t is scale-bearing; extent and the clip gate
@@ -682,36 +705,71 @@ class FloorGeometricBoundTests(unittest.TestCase):
         for scale in (0.1, 1.0, 10.0):
             rays = [(camera_origin,
                      (base[0] * scale, base[1] * scale, base[2] * scale))]
-            half = worker.required_floor_half_extent(
+            radius = worker.required_floor_radius(
                 rays, (0.0, 0.0, 0.0), camera_origin, forward,
                 clip_end=11.0)
             # Hit is fixed at (30, 20, 0); axial depth is 10 regardless of
             # the direction scale (t itself ranges 1..100).
-            self.assertAlmostEqual(half, 30.0 * 1.05)
+            self.assertAlmostEqual(radius, math.hypot(30.0, 20.0) * 1.05)
             with self.assertRaisesRegex(RuntimeError,
                                         "FLOOR_EDGE_BEYOND_CLIP_END"):
-                worker.required_floor_half_extent(
+                worker.required_floor_radius(
                     rays, (0.0, 0.0, 0.0), camera_origin, forward,
                     clip_end=10.0)
+        # Wall variant: direction (3,0,4) crosses wall_radius 5 at
+        # t = 5/(3s), so the crossing is fixed at z = 10 + 20/3 and the
+        # axial depth (along a forward parallel to the ray) is fixed at 25/3.
+        wall_fwd = (0.6, 0.0, 0.8)
+        for scale in (0.1, 1.0, 10.0):
+            rays = [((0.0, 0.0, 10.0), (3.0 * scale, 0.0, 4.0 * scale))]
+            height = worker.required_wall_height(
+                rays, (0.0, 0.0, 0.0), camera_origin, wall_fwd,
+                wall_radius=5.0, clip_end=200.0)
+            self.assertAlmostEqual(height, (10.0 + 20.0 / 3.0) * 1.05)
+            with self.assertRaisesRegex(RuntimeError,
+                                        "FLOOR_EDGE_BEYOND_CLIP_END"):
+                worker.required_wall_height(
+                    rays, (0.0, 0.0, 0.0), camera_origin, wall_fwd,
+                    wall_radius=5.0, clip_end=8.0)
 
-    def test_horizon_in_frame_fails_loud(self):
+    def test_above_horizon_rays_derive_wall_height(self):
         worker = self._worker()
+        # The below-horizon corner is owned by the disc; the upward corner
+        # derives the wall instead of failing.
         rays = [((0.0, 0.0, 10.0), (1.0, 1.0, -1.0)),
-                ((0.0, 0.0, 10.0), (1.0, 1.0, 0.0))]  # top of frame at horizon
-        with self.assertRaisesRegex(RuntimeError, "FLOOR_HORIZON_IN_FRAME"):
-            worker.required_floor_half_extent(
-                rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
-        rays[1] = ((0.0, 0.0, 10.0), (1.0, 1.0, 0.25))  # pointing up
-        with self.assertRaisesRegex(RuntimeError, "FLOOR_HORIZON_IN_FRAME"):
-            worker.required_floor_half_extent(
-                rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
+                ((0.0, 0.0, 10.0), (1.0, 0.0, 1.0))]
+        height = worker.required_wall_height(
+            rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+            wall_radius=6.0)
+        # xy speed 1: crosses radius 6 at t=6, z_hit = 10 + 6.
+        self.assertAlmostEqual(height, 16.0 * 1.05)
+
+    def test_vertical_ray_cannot_be_covered_fails_loud(self):
+        worker = self._worker()
+        rays = [((0.0, 0.0, 10.0), (0.0, 0.0, 1.0))]
+        with self.assertRaisesRegex(RuntimeError, "CYC_WALL_UNREACHABLE"):
+            worker.required_wall_height(
+                rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+                wall_radius=6.0)
+
+    def test_camera_outside_the_wall_fails_loud(self):
+        worker = self._worker()
+        bpy = mock.MagicMock()
+        bpy.context.scene.objects = []
+        # Steep camera at radial 100 m whose ground hits (at (90, 0)) size
+        # the wall to r=95.5 m - inside the camera position, unrecoverable.
+        cam = _FakeCamera(_FakeCamData([_V(-1.0, 0.0, -1.0)] * 4),
+                          _V(100.0, 0.0, 10.0))
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(RuntimeError, "CYC_CAMERA_OUTSIDE"):
+                worker.build_studio_floor(0.5, scene=_FakeScene(cam))
 
     def test_hit_behind_camera_fails_loud(self):
         worker = self._worker()
         # Camera below the floor plane looking down: t = (0-(-5))/-1 < 0.
         rays = [((0.0, 0.0, -5.0), (0.0, 0.0, -1.0))]
         with self.assertRaisesRegex(RuntimeError, "FLOOR_BEHIND_CAMERA"):
-            worker.required_floor_half_extent(
+            worker.required_floor_radius(
                 rays, (0.0, 0.0, 0.0), (0.0, 0.0, -5.0), (0.0, 0.0, -1.0))
 
     def test_hit_beyond_clip_end_fails_loud(self):
@@ -720,35 +778,59 @@ class FloorGeometricBoundTests(unittest.TestCase):
         forward = (0.0, 0.0, -1.0)
         rays = [(camera_origin, (1.0, 0.0, -1.0))]  # hit at axial depth 10
         with self.assertRaisesRegex(RuntimeError, "FLOOR_EDGE_BEYOND_CLIP_END"):
-            worker.required_floor_half_extent(rays, (0.0, 0.0, 0.0),
+            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
                                               camera_origin, forward,
                                               clip_end=10.0)
         # Axial depth 10 is far inside clip_end 100; it only trips when the
         # clip is tightened below the true axial depth.
         self.assertGreater(
-            worker.required_floor_half_extent(rays, (0.0, 0.0, 0.0),
+            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
                                               camera_origin, forward,
                                               clip_end=11.0), 0.0)
         with self.assertRaisesRegex(RuntimeError,
                                     "FLOOR_EDGE_BEYOND_CLIP_END"):
-            worker.required_floor_half_extent(rays, (0.0, 0.0, 0.0),
+            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
                                               camera_origin, forward,
                                               clip_end=9.0)
+        # Wall variant: hit at axial depth 25/3 along a forward parallel to
+        # the ray (direction (3,0,4) against wall_radius 5).
+        rays = [((0.0, 0.0, 10.0), (3.0, 0.0, 4.0))]
+        with self.assertRaisesRegex(RuntimeError,
+                                    "FLOOR_EDGE_BEYOND_CLIP_END"):
+            worker.required_wall_height(rays, (0.0, 0.0, 0.0),
+                                        camera_origin, (0.6, 0.0, 0.8),
+                                        wall_radius=5.0, clip_end=8.0)
+        self.assertGreater(
+            worker.required_wall_height(rays, (0.0, 0.0, 0.0),
+                                        camera_origin, (0.6, 0.0, 0.8),
+                                        wall_radius=5.0, clip_end=9.0), 0.0)
 
     def test_dof_margin_adds_defocus_blur_radius(self):
         worker = self._worker()
         rays = [((0.0, 0.0, 10.0), (1.0, 1.0, -1.0))]
         camera_origin = (0.0, 0.0, 10.0)
         forward = (0.0, 0.0, -1.0)
-        plain = worker.required_floor_half_extent(rays, (0.0, 0.0, 0.0),
-                                                  camera_origin, forward)
+        plain = worker.required_floor_radius(
+            rays, (0.0, 0.0, 0.0), camera_origin, forward)
         # 85 mm at f/3.2: aperture radius 13.28125 mm; hit at axial depth 10
         # with focus at 5 -> blur radius a*|10-5|/5 = a.
         aperture = (85.0 / (2.0 * 3.2)) / 1000.0
-        with_dof = worker.required_floor_half_extent(
+        with_dof = worker.required_floor_radius(
             rays, (0.0, 0.0, 0.0), camera_origin, forward,
             aperture_radius_m=aperture, focus_distance_m=5.0)
         self.assertAlmostEqual(with_dof - plain, aperture)
+        # Wall variant: crossing at axial depth sqrt(2)*4 for direction
+        # (1,0,1) against wall_radius 4 with a parallel forward.
+        rays = [((0.0, 0.0, 10.0), (1.0, 0.0, 1.0))]
+        diag_fwd = (1.0 / math.sqrt(2.0), 0.0, 1.0 / math.sqrt(2.0))
+        plain = worker.required_wall_height(
+            rays, (0.0, 0.0, 0.0), camera_origin, diag_fwd, wall_radius=4.0)
+        with_dof = worker.required_wall_height(
+            rays, (0.0, 0.0, 0.0), camera_origin, diag_fwd, wall_radius=4.0,
+            aperture_radius_m=aperture, focus_distance_m=5.0)
+        depth = math.sqrt(2.0) * 4.0
+        self.assertAlmostEqual(with_dof - plain,
+                               aperture * abs(depth - 5.0) / 5.0)
 
     def test_orthographic_rays_use_corner_origins_and_forward_axis(self):
         worker = self._worker()
@@ -790,21 +872,28 @@ class FloorGeometricBoundTests(unittest.TestCase):
             _V(0, 0, 10))
         with mock.patch.object(worker, "bpy", bpy):
             worker.build_studio_floor(0.5, scene=_FakeScene(cam))
-        kwargs = bpy.ops.mesh.primitive_plane_add.call_args.kwargs
-        # Corner hits at (±10,±10,0): half = 10*1.05 + DOF blur 0.01328125.
-        expected = 2.0 * (10.0 * 1.05 + (85.0 / 6.4 / 1000.0))
-        self.assertAlmostEqual(kwargs["size"], expected)
-        self.assertEqual(kwargs["location"], (0.0, 0.0, 0.0))
+        verts = (bpy.data.meshes.new.return_value.from_pydata.call_args
+                 .args[0])
+        # Corner hits at (±10,±10,0): disc radius = 10*sqrt(2)*1.05 + DOF
+        # blur 0.01328125; fillet r_c = 1.0; no upward corners -> H = r_c.
+        expected_disc = 10.0 * math.sqrt(2.0) * 1.05 + (85.0 / 6.4 / 1000.0)
+        max_radial = max(math.hypot(v[0], v[1]) for v in verts)
+        self.assertAlmostEqual(max_radial, expected_disc + 1.0)
+        self.assertAlmostEqual(max(v[2] for v in verts), 1.0)
 
-        # A steep camera whose hits stay inside the legacy minimum keeps it.
+        # A steep camera whose hits stay inside the legacy minimum keeps it:
+        # R = 7.0 = 0.5*14, r_c = 1.0, H = 1.0.
         steep = _FakeCamera(
             _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10), _V(-1, 1, -10),
                           _V(1, 1, -10)], clip_end=200.0),
             _V(0, 0, 10))
         with mock.patch.object(worker, "bpy", bpy):
             worker.build_studio_floor(0.5, scene=_FakeScene(steep))
-        kwargs = bpy.ops.mesh.primitive_plane_add.call_args.kwargs
-        self.assertAlmostEqual(kwargs["size"], 0.5 * 14.0)
+        verts = (bpy.data.meshes.new.return_value.from_pydata.call_args
+                 .args[0])
+        max_radial = max(math.hypot(v[0], v[1]) for v in verts)
+        self.assertAlmostEqual(max_radial, 7.0 + 1.0)
+        self.assertAlmostEqual(max(v[2] for v in verts), 1.0)
 
     def test_build_without_a_camera_fails_loud_no_silent_small_plane(self):
         worker = self._worker()
@@ -821,6 +910,200 @@ class FloorGeometricBoundTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,
                                         "FLOOR_CAMERA_MISSING"):
                 worker.build_studio_floor(1.5, scene=_FakeScene(None))
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+class CycMeshDataTests(unittest.TestCase):
+    """Pure mesh geometry of the revolved cyclorama profile."""
+
+    @staticmethod
+    def _mesh(radius=5.0, wall=3.0, fillet=1.0, center=(0.0, 0.0, 0.0)):
+        import render_worker
+        return render_worker.cyc_mesh_data(radius, wall, fillet, center)
+
+    def test_vertex_and_face_counts(self):
+        import render_worker
+        angular = render_worker.CYC_ANGULAR_SEGMENTS
+        profile_points = 2 + render_worker.FILLET_ARC_SEGMENTS
+        verts, faces = self._mesh()
+        self.assertEqual(len(verts), 1 + angular * profile_points)
+        self.assertEqual(len(faces),
+                         angular + angular * (profile_points - 1))
+
+    def test_disc_fan_normals_point_up(self):
+        import render_worker
+        angular = render_worker.CYC_ANGULAR_SEGMENTS
+        verts, faces = self._mesh()
+        for face in faces[:angular]:
+            p0, p1, p2 = (verts[face[0]], verts[face[1]], verts[face[2]])
+            normal = _cross((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]),
+                            (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]))
+            self.assertGreater(normal[2], 0.0)
+
+    def test_wall_ring_quad_normals_point_inward(self):
+        import render_worker
+        angular = render_worker.CYC_ANGULAR_SEGMENTS
+        verts, faces = self._mesh()
+        # The last angular faces close the top wall ring; their normals
+        # must point toward the axis (dot with the radial vector < 0).
+        for face in faces[-angular:]:
+            p0, p1, p2 = (verts[face[0]], verts[face[1]], verts[face[2]])
+            normal = _cross((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]),
+                            (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]))
+            radial = (p0[0], p0[1], 0.0)
+            self.assertLess(normal[0] * radial[0] + normal[1] * radial[1],
+                            0.0)
+
+    def test_fillet_ring_radii_increase_with_ring_z(self):
+        import render_worker
+        angular = render_worker.CYC_ANGULAR_SEGMENTS
+        segments = render_worker.FILLET_ARC_SEGMENTS
+        center = (1.0, 2.0, 0.5)
+        verts, _ = self._mesh(radius=5.0, wall=3.0, fillet=1.0,
+                              center=center)
+        prev = None
+        for i in range(1, segments + 1):
+            ring = verts[1 + i * angular: 1 + (i + 1) * angular]
+            mean_r = (sum(math.hypot(v[0] - center[0], v[1] - center[1])
+                          for v in ring) / angular)
+            mean_z = sum(v[2] for v in ring) / angular
+            if prev is not None:
+                self.assertGreater(mean_r, prev[0])
+                self.assertGreater(mean_z, prev[1])
+            prev = (mean_r, mean_z)
+
+    def test_zero_nominal_wall_skips_the_degenerate_ring(self):
+        import render_worker
+        angular = render_worker.CYC_ANGULAR_SEGMENTS
+        segments = render_worker.FILLET_ARC_SEGMENTS
+        verts, faces = self._mesh(radius=5.0, wall=1.0, fillet=1.0)
+        profile_points = 1 + segments  # disc edge + arc; no wall-top point
+        self.assertEqual(len(verts), 1 + angular * profile_points)
+        self.assertEqual(len(faces), angular * profile_points)
+        for face in faces:
+            # Both halves of every face must be non-degenerate: a sliver
+            # quad with an exact-zero first triangle used to slip through.
+            # Triangulate (v0,v1,v2)+(v0,v2,v3) for quads; fan triangles are
+            # (v0,v1,v2) only. Real rings differ by ~1e-1 m; degenerate
+            # ones by 0.0, so 1e-9 separates them cleanly.
+            tris = [(face[0], face[1], face[2])]
+            if len(face) == 4:
+                tris.append((face[0], face[2], face[3]))
+            for tri in tris:
+                p0, p1, p2 = (verts[tri[0]], verts[tri[1]], verts[tri[2]])
+                area2 = _cross((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]),
+                               (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]))
+                mag = math.sqrt(sum(c * c for c in area2))
+                self.assertGreater(mag, 1e-9)
+        self.assertAlmostEqual(max(v[2] for v in verts), 1.0)
+
+
+class CycGeometryBlenderTests(unittest.TestCase):
+    """Real-Blender smoke check: the cyc builds, validates, and matches the
+    derived profile. Skipped when the pinned Blender is unavailable."""
+
+    BLENDER = Path(os.environ.get("MSP_BLENDER_BIN")
+                   or r"C:/Program Files/Blender Foundation/Blender 5.1/blender.exe")
+
+    def test_cyc_builds_in_real_blender(self):
+        if not self.BLENDER.is_file():
+            self.skipTest(f"Pinned Blender unavailable: {self.BLENDER}")
+        with tempfile.TemporaryDirectory() as tmp:
+            driver = Path(tmp) / "_drive.py"
+            driver.write_text(
+                "import math, os, sys\n"
+                "import bpy\n"
+                "for _o in list(bpy.data.objects):\n"
+                "    bpy.data.objects.remove(_o)\n"
+                "saved, sys.argv = sys.argv, [a for a in sys.argv if a != '--']\n"
+                "sys.path.insert(0, os.environ['MSP_REPO'])\n"
+                "import render_worker as w\n"
+                "sys.argv = saved\n"
+                "cam_data = bpy.data.cameras.new('Cam')\n"
+                "cam = bpy.data.objects.new('Cam', cam_data)\n"
+                "bpy.context.scene.collection.objects.link(cam)\n"
+                "cam.location = (0.0, 0.0, 10.0)\n"
+                # Tilted 30 degrees above the horizon so the frame corners
+                # derive a wall taller than the fillet (non-degenerate cove).
+                "cam.rotation_euler = (math.radians(120.0), 0.0, 0.0)\n"
+                "bpy.context.scene.camera = cam\n"
+                "obj = w.build_studio_floor(0.5)\n"
+                "failures = []\n"
+                "def check(name, cond, detail=''):\n"
+                "    if not cond:\n"
+                "        failures.append(f'{name} {detail}')\n"
+                "check('object_name', obj.name == 'MSP_StudioFloor', obj.name)\n"
+                "mesh = obj.data\n"
+                "check('validate_clean', mesh.validate() is False)\n"
+                "mesh.update()\n"
+                "rays, origin, fwd = w._camera_corner_rays(bpy.context.scene)\n"
+                "seat = (0.0, 0.0, 0.0)\n"
+                "clip = float(cam_data.clip_end)\n"
+                "disc = max(w.required_floor_radius(rays, seat, origin, fwd,\n"
+                "          clip_end=clip), 7.0)\n"
+                "rc = max(2.0 * 0.5, 0.5)\n"
+                "wall_r = disc + rc\n"
+                "wall_h = max(w.required_wall_height(rays, seat, origin, fwd,\n"
+                "            wall_r, clip_end=clip), rc)\n"
+                "max_r = max(math.hypot(v.co.x, v.co.y) for v in mesh.vertices)\n"
+                "max_z = max(v.co.z for v in mesh.vertices)\n"
+                "min_z = min(v.co.z for v in mesh.vertices)\n"
+                "check('max_radius', abs(max_r - wall_r) < 1e-4,\n"
+                "      f'{max_r} vs {wall_r}')\n"
+                "check('max_z', abs(max_z - wall_h) < 1e-4,\n"
+                "      f'{max_z} vs {wall_h}')\n"
+                "check('min_z', abs(min_z) < 1e-6, f'{min_z}')\n"
+                "top = [p for p in mesh.polygons\n"
+                "       if all(math.hypot(mesh.vertices[i].co.x,\n"
+                "                         mesh.vertices[i].co.y) > wall_r - 1e-3\n"
+                "              for i in p.vertices)]\n"
+                "check('top_ring_found', bool(top))\n"
+                "if top:\n"
+                "    vs = [mesh.vertices[i].co for i in top[0].vertices]\n"
+                "    n = (vs[1] - vs[0]).cross(vs[2] - vs[0])\n"
+                "    check('wall_normal_inward', n.dot(vs[0]) < 0, str(n))\n"
+                "mat = mesh.materials[0]\n"
+                "bsdf = mat.node_tree.nodes.get('Principled BSDF')\n"
+                "check('material', bsdf is not None)\n"
+                "if bsdf:\n"
+                "    check('roughness',\n"
+                "          abs(bsdf.inputs['Roughness'].default_value - 0.7)\n"
+                "          < 1e-6,\n"
+                "          str(bsdf.inputs['Roughness'].default_value))\n"
+                "# Straight-down camera (rotation 0: the default camera\n"
+                "# looks down its local -Z): every corner ray is below\n"
+                "# the horizon - the production zero-nominal-wall case.\n"
+                "# 180 deg would point the camera UP, not down.\n"
+                "cam.rotation_euler = (math.radians(0.0), 0.0, 0.0)\n"
+                "bpy.data.objects.remove(obj, do_unlink=True)\n"
+                "obj2 = w.build_studio_floor(0.5)\n"
+                "check('steep_object_name', obj2.name == 'MSP_StudioFloor',\n"
+                "      obj2.name)\n"
+                "mesh2 = obj2.data\n"
+                "check('steep_validate_clean', mesh2.validate() is False)\n"
+                "mesh2.update()\n"
+                "zero_area = [p for p in mesh2.polygons if p.area <= 1e-12]\n"
+                "check('steep_no_zero_area_faces', not zero_area,\n"
+                "      f'{len(zero_area)} zero-area faces')\n"
+                "if failures:\n"
+                "    print('CYC_SMOKE_FAIL:', '; '.join(failures))\n"
+                "else:\n"
+                "    print('CYC_SMOKE_OK')\n",
+                encoding="utf-8")
+            import subprocess
+            result = subprocess.run(
+                [str(self.BLENDER), "--background", "--factory-startup",
+                 "--python", str(driver)],
+                capture_output=True, text=True, timeout=300,
+                env=dict(os.environ, MSP_REPO=str(ROOT)))
+            self.assertIn("CYC_SMOKE_OK", result.stdout,
+                          msg=result.stdout + result.stderr)
+            self.assertNotIn("CYC_SMOKE_FAIL", result.stdout)
 
 
 class RenderReportFloorTimingTests(unittest.TestCase):

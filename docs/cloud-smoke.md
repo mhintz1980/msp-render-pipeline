@@ -474,3 +474,66 @@ Workspace note: a residual `.test_deps/` directory at the repo root was
 created against instruction by a prior agent and is permission-inaccessible;
 it is left untouched (not deleted, ACL not changed). All batch-3b code changes
 are uncommitted; unrelated existing work is untouched.
+
+### 2026-09-21 batch-3c: studio cyclorama (owner Option B) — 2-frame probe passed, owner look pending
+
+The batch-3b plane was replaced by a rotationally symmetric studio cyclorama
+(flat disc + tangent quarter-arc fillet + vertical wall), sized per frame from
+the actual camera's frame-corner rays — below-horizon corner hits bound the
+disc radius (Euclidean radial metric), above/at-horizon corner rays bound the
+wall height via the wall-cylinder crossing (wall derived against the FINISHED
+radius; ordering load-bearing). Implementation delegated to GLM-5.3-Flash and
+adversarially reviewed by DeepSeek-Flash (fresh context; FIX-FIRST verdict —
+guard-ordering, CYC_MESH_INVALID unit coverage, degenerate zero-height wall
+ring when no corner ray is above the horizon, test-fidelity fixes — all
+addressed before dispatch). `FLOOR_HORIZON_IN_FRAME` retired; new error codes
+`CYC_WALL_UNREACHABLE`, `CYC_CAMERA_OUTSIDE`, `CYC_MESH_INVALID`; roughness
+0.6 → 0.7 (the owner-sanctioned pool-softening knob). Suite: **220 tests OK,
+exit 0** (venv interpreter, `${PIPESTATUS[0]}` checked). Preflight dry-run
+(headless Blender, NO render — `output/batch3c-preflight-derive.py`): both
+azimuths derive disc r=52.19 m (grazing corners; legacy min 23.05 m), fillet
+3.29 m, zero above-horizon corner rays → wall ring correctly skipped, wall
+top z=3.29 m sits above the frame top, camera inside the cylinder, mesh
+1665 verts / 1664 faces.
+
+**Dispatch (1 attempt, 2 frames, az 42 + 222), per-dispatch estimate USD
+0.197 in `request.json`; measured RATE-DERIVED NOT BILLED:** 296.874
+container-s ≈ **USD 0.092** (all-in rate 0.00030992/s; no invoice queried).
+Run dir `output/preview-studio-floor-3c-20260921/`; Modal app
+ap-BF5WG9POgmERjJOyPNHtC0.
+
+| Frame | Beauty | Matte | Render phase | Frame total | Container s |
+|---|---|---|---|---|---|
+| az42 (cold, OptiX compile) | 275.70 s | 2.84 s | 278.83 s | 279.34 s | 282.929 |
+| az222 (warm) | 8.97 s | 2.73 s | 11.99 s | 12.44 s | 13.945 |
+
+**Warm RENDER phase 11.99 s vs the 10.2 s batch-1 warm baseline = +17.5% —
+inside the declared +10-30% band.** Against run3's plane (11.27 s) the cyc
+mesh costs +6.4%. Frame totals are distinct numbers and are not compared
+against the render baseline.
+
+Gates (run dir + recomputed from downloaded artifacts): both frames Blender
+exit 0 with GPU-process evidence; dispatcher floor finishing `success` in
+`rendered_floor` mode both frames; `probe_sequence --expect-frames 2
+--no-encode` **passed** — fidelity_gate_all_pass true, grain deterministic,
+no outlier frames, no problems, frame MAE 44.15; mask coverage 41.28% /
+41.32% (MATTE_COVERAGE_CEILING 0.90 unfired), mask==matte-alpha agreement
+100.000% both frames. **No encode was run — a 2-frame probe supports no
+full-orbit claim.**
+
+Lighting risk (wall occluding low-angle HDRI light) — MEASURED, negligible:
+product-pixel luminance over mask==255, cyc vs run3 plane: az42 130.119 vs
+129.924 (**+0.15%**), az222 100.481 vs 100.217 (**+0.26%**).
+
+Vision read (parent, on 3c composites): (1) the softbox pool right of the
+machine is now a soft broad falloff — no hard "spotlight" ellipse (roughness
+0.7 doing its sanctioned work); (2) no plane edge or hard seam anywhere —
+floor blends into a continuous cove gradient in both frames; (3) mirror test
+(regenerated `composite-prelens-mirror-check.png` per frame, Mark's markup3
+exercise): the floor line and background gradient now continue across the
+mirrored seam; the residual left/right difference is the deliberately
+asymmetric light rig (accepted as normal); mirrored-half mean abs diff 29.35
+(az42) / 34.39 (az222) — dominated by product structure and rig, not a
+backdrop seam. **Owner look review is the open gate** — "looks good" from
+anyone else is not acceptance; no encode, no full orbit, no batch-4 work
+until Mark's explicit words.

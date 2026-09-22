@@ -939,7 +939,7 @@ def apply_cycles_quality(scene, quality: Dict[str, Any]):
 FLOOR_OBJECT_NAME = "MSP_StudioFloor"
 FLOOR_MATERIAL_NAME = "MSP_StudioFloor_Neutral"
 FLOOR_COLOR_HEX = "#B8B8B8"
-FLOOR_ROUGHNESS = 0.6
+CYC_ROUGHNESS = 0.7  # 2026-09-21 owner look review: softens the softbox pool.
 
 
 def film_transparent_for(out_spec: Dict[str, Any]) -> bool:
@@ -1151,47 +1151,56 @@ def _camera_corner_rays(scene):
         f"mode.")
 
 
-def required_floor_half_extent(corner_rays, floor_center,
-                               camera_origin, camera_forward,
-                               clip_end=200.0, aperture_radius_m=0.0,
-                               focus_distance_m=0.0):
-    """Half-extent needed so the floor covers every frame-corner ground hit.
+def _cyc_dof_blur(axial_depth, aperture_radius_m, focus_distance_m):
+    """Defocus blur disc radius at a hit's axial depth (0 when DOF is off)."""
+    if aperture_radius_m > 0.0 and focus_distance_m > 0.0:
+        return (aperture_radius_m * abs(axial_depth - focus_distance_m)
+                / focus_distance_m)
+    return 0.0
+
+
+def required_floor_radius(corner_rays, cyc_center,
+                          camera_origin, camera_forward,
+                          clip_end=200.0, aperture_radius_m=0.0,
+                          focus_distance_m=0.0):
+    """Disc radius needed so the cyc disc covers every below-horizon corner.
 
     Pure geometry: corner_rays is an iterable of (origin_xyz, direction_xyz)
-    float tuples in world space, floor_center the plane's (x, y, z). For each
-    ray the intersection with the ground plane z=floor_z is solved
-    analytically (t = (floor_z - origin_z) / direction_z). The parameter t
-    is scale-bearing and never used directly as a distance: the clip and
-    DOF metrics use the hit's AXIAL DEPTH, the projection of
-    (hit - camera_origin) onto the normalized camera_forward - exactly what
-    Blender's clip_end measures. camera_origin/camera_forward come from the
-    actual camera matrix (see _camera_corner_rays). Directions may carry any
-    positive scale: direction*0.1 and direction*10 give identical extent and
-    clipping results. Any ray that points at or above the horizon
-    (direction_z >= 0), hits behind the camera (t <= 0), or lands
-    at/beyond clip_end axially fails loudly - a finite
-    plane cannot cover those frames, and silently sizing an enormous
-    arbitrary one would hide an owner look decision (neutral world colour
-    vs a real cyclorama).
+    float tuples in world space, cyc_center the (cx, cy, seat_z) of the
+    revolved surface. For each ray with direction_z < 0 the intersection
+    with the ground plane z=seat_z is solved analytically
+    (t = (seat_z - origin_z) / direction_z). The requirement is EUCLIDEAN
+    radial distance of the hit from the cyc axis - the coverage surface is
+    now a rotationally symmetric disc, not a square plane, so the old
+    Chebyshev max(|dx|, |dy|) metric would under-cover the diagonals it
+    used to round off. Rays with direction_z >= 0 are ignored here: the
+    concave fillet/wall owns them, and their coverage is derived separately
+    in required_wall_height against the FINISHED wall radius (order is
+    load-bearing - raising R afterwards would move the cylinder out from
+    under a wall height derived against the smaller one).
 
-    The returned half-extent is the max Chebyshev x/y distance of a hit from
-    the plane centre, grown by a small conservative margin (5%) plus, when
-    depth of field is on, the defocus blur disc radius at the hit's axial
-    depth (aperture_radius_m * |depth - focus| / focus) so the blurred far
-    edge still lands on geometry.
+    The parameter t is scale-bearing and never used directly as a distance:
+    the clip and DOF metrics use the hit's AXIAL DEPTH, the projection of
+    (hit - camera_origin) onto the normalized camera_forward - exactly what
+    Blender's clip_end measures. Directions may carry any positive scale:
+    direction*0.1 and direction*10 give identical results. A below-horizon
+    ray that hits behind the camera (t <= 0) or lands at/beyond clip_end
+    axially fails loudly - no silent guess can cover those frames.
+
+    The returned radius is the max per-ray requirement: radial distance
+    grown by a small conservative margin (5%) plus, when depth of field is
+    on, the defocus blur disc radius at the hit's axial depth
+    (aperture_radius_m * |depth - focus| / focus) so the blurred far edge
+    still lands on geometry.
     """
-    center_x, center_y, floor_z = floor_center
-    half_extent = 0.0
+    center_x, center_y, seat_z = cyc_center
+    required = 0.0
     fwd_x, fwd_y, fwd_z = camera_forward
     for index, (origin, direction) in enumerate(corner_rays):
         dz = direction[2]
         if dz >= 0.0:
-            raise RuntimeError(
-                f"FLOOR_HORIZON_IN_FRAME: frame corner {index} ray points at "
-                f"or above the horizon (direction_z={dz:.6f} >= 0); no finite "
-                f"floor plane covers the frame. Owner decision needed: neutral "
-                f"world colour vs a real cyclorama.")
-        t = (floor_z - origin[2]) / dz
+            continue
+        t = (seat_z - origin[2]) / dz
         if t <= 0.0:
             raise RuntimeError(
                 f"FLOOR_BEHIND_CAMERA: frame corner {index} ground "
@@ -1210,39 +1219,176 @@ def required_floor_half_extent(corner_rays, floor_center,
                 f"normalized camera forward axis), at/beyond the camera "
                 f"clip_end of {clip_end:.2f} m; the far floor edge would be "
                 f"clipped. Raise clip_end or steepen the camera.")
-        extent = max(abs(hit_x - center_x), abs(hit_y - center_y))
-        extent *= (1.0 + FLOOR_EDGE_MARGIN_RATIO)
-        if aperture_radius_m > 0.0 and focus_distance_m > 0.0:
-            extent += (aperture_radius_m * abs(axial_depth - focus_distance_m)
-                       / focus_distance_m)
-        half_extent = max(half_extent, extent)
-    return half_extent
+        radial = math.hypot(hit_x - center_x, hit_y - center_y)
+        need = (radial * (1.0 + FLOOR_EDGE_MARGIN_RATIO)
+                + _cyc_dof_blur(axial_depth, aperture_radius_m,
+                                focus_distance_m))
+        required = max(required, need)
+    return required
+
+
+def required_wall_height(corner_rays, cyc_center,
+                         camera_origin, camera_forward, wall_radius,
+                         clip_end=200.0, aperture_radius_m=0.0,
+                         focus_distance_m=0.0):
+    """Wall height (above the seat) so the cyc wall covers above-horizon rays.
+
+    Pure geometry, the companion of required_floor_radius and derived AGAINST
+    the finished wall radius (see the ordering note there). For each ray with
+    direction_z >= 0 the intersection with the wall cylinder
+    |P_xy - c_xy|^2 = wall_radius^2 is solved as a quadratic in t; the
+    smallest positive root is the crossing. A vertical ray (zero horizontal
+    velocity) never meets the cylinder and fails CYC_WALL_UNREACHABLE - the
+    wall is finite, so no height can cover a ray that escapes through the
+    open top without ever crossing the cylinder. From inside the cylinder
+    there is always exactly one positive root; the no-root branch is
+    defensive.
+
+    The requirement is (z_hit - seat_z) grown by the 5% margin plus DOF
+    blur at the hit's axial depth. The fillet lies strictly inside the
+    cylinder, so the true concave hit happens no later than this
+    cylinder-crossing height - using the crossing is conservative and
+    correct. Rays with direction_z < 0 are ignored here (the disc owns
+    them). Directions may carry any positive scale; results depend only on
+    hit points and axial depths.
+    """
+    center_x, center_y, seat_z = cyc_center
+    required = 0.0
+    fwd_x, fwd_y, fwd_z = camera_forward
+    for index, (origin, direction) in enumerate(corner_rays):
+        dz = direction[2]
+        if dz < 0.0:
+            continue
+        dx, dy = direction[0], direction[1]
+        ox, oy = origin[0] - center_x, origin[1] - center_y
+        a = dx * dx + dy * dy
+        if a <= 0.0:
+            raise RuntimeError(
+                f"CYC_WALL_UNREACHABLE: frame corner {index} ray is vertical "
+                f"and never meets the wall cylinder; no finite wall covers "
+                f"the frame.")
+        b = 2.0 * (ox * dx + oy * dy)
+        c = ox * ox + oy * oy - wall_radius * wall_radius
+        disc = b * b - 4.0 * a * c
+        if disc < 0.0:
+            raise RuntimeError(
+                f"CYC_WALL_UNREACHABLE: frame corner {index} ray never "
+                f"meets the wall cylinder; no finite wall covers the frame.")
+        root = math.sqrt(disc)
+        t_hit = None
+        for t in ((-b - root) / (2.0 * a), (-b + root) / (2.0 * a)):
+            if t > 0.0:
+                t_hit = t
+                break
+        if t_hit is None:
+            raise RuntimeError(
+                f"CYC_WALL_UNREACHABLE: frame corner {index} ray meets the "
+                f"wall cylinder only behind its origin; no finite wall "
+                f"covers the frame.")
+        hit_x = origin[0] + t_hit * dx
+        hit_y = origin[1] + t_hit * dy
+        hit_z = origin[2] + t_hit * dz
+        axial_depth = ((hit_x - camera_origin[0]) * fwd_x
+                       + (hit_y - camera_origin[1]) * fwd_y
+                       + (hit_z - camera_origin[2]) * fwd_z)
+        if axial_depth >= clip_end:
+            raise RuntimeError(
+                f"FLOOR_EDGE_BEYOND_CLIP_END: frame corner {index} wall-top "
+                f"hit is at axial depth {axial_depth:.2f} m (measured along "
+                f"the normalized camera forward axis), at/beyond the camera "
+                f"clip_end of {clip_end:.2f} m; the wall top would be "
+                f"clipped. Raise clip_end or steepen the camera.")
+        need = ((hit_z - seat_z) * (1.0 + FLOOR_EDGE_MARGIN_RATIO)
+                + _cyc_dof_blur(axial_depth, aperture_radius_m,
+                                focus_distance_m))
+        required = max(required, need)
+    return required
+
+
+CYC_ANGULAR_SEGMENTS = 128  # Revolve resolution of the cyc surface.
+FILLET_ARC_SEGMENTS = 12    # Quarter-arc samples between disc and wall.
+
+
+def cyc_mesh_data(floor_radius, wall_height, fillet_radius, center,
+                  angular_segments=CYC_ANGULAR_SEGMENTS):
+    """Return (verts, faces) for the revolved cyc profile, world space.
+
+    The 2D r-z profile - flat disc out to floor_radius, tangent quarter-arc
+    fillet of fillet_radius (tangent to the disc at its outer edge, tangent
+    to the vertical wall at its top), then - only when wall_height is
+    strictly above fillet_radius - the wall up to wall_height above the
+    seat - is revolved 360 degrees around the vertical axis through
+    center (cx, cy, seat z). Shared profile endpoints are not duplicated.
+    A nominal wall of exactly fillet_radius is skipped: appending its
+    wall-top point would duplicate the arc's final sample and collapse the
+    last quad ring to zero height (degenerate faces).
+    Disc-fan triangles are wound so their normals point UP (+z); ring quads
+    are wound so their normals point INWARD toward the axis - the camera
+    always sees the concave side of the cove.
+    """
+    cx, cy, seat_z = center
+    big_r = floor_radius
+    rc = fillet_radius
+    # Profile (r, z) relative to the seat: disc edge, arc samples, wall top.
+    profile = [(big_r, 0.0)]
+    for k in range(1, FILLET_ARC_SEGMENTS + 1):
+        phi = -math.pi / 2.0 + (math.pi / 2.0) * k / FILLET_ARC_SEGMENTS
+        profile.append((big_r + rc * math.cos(phi),
+                        rc + rc * math.sin(phi)))
+    if wall_height > rc:
+        profile.append((big_r + rc, wall_height))
+    verts = [(cx, cy, seat_z)]
+    for r, z in profile:
+        for j in range(angular_segments):
+            theta = 2.0 * math.pi * j / angular_segments
+            verts.append((cx + r * math.cos(theta),
+                          cy + r * math.sin(theta),
+                          seat_z + z))
+
+    def ring(i, j):
+        return 1 + i * angular_segments + (j % angular_segments)
+
+    faces = []
+    # Disc fan, wound for +z normals.
+    for j in range(angular_segments):
+        faces.append((0, ring(0, j), ring(0, j + 1)))
+    # Quad rings, wound for inward normals (camera sees the concave side).
+    for i in range(len(profile) - 1):
+        for j in range(angular_segments):
+            faces.append((ring(i, j), ring(i + 1, j),
+                          ring(i + 1, j + 1), ring(i, j + 1)))
+    return verts, faces
 
 
 def build_studio_floor(radius: float, scene=None):
-    """Create the neutral studio floor plane and hold its direct reference.
+    """Create the studio cyclorama and hold its direct reference.
 
     Called AFTER the ground-keyword hide pass (so the repo's own ground
     defences cannot eat it) and AFTER the photorealism pass (so no generic
     material pass - CAD polish, bevel injection - can touch its fixed neutral
-    material). The size keeps the same product-radius rule only as a MINIMUM:
-    the real size is derived per frame from the actual camera's frame-corner
-    rays intersected analytically with the ground plane (see
-    required_floor_half_extent), so the far edge always lands beyond the
-    visible frame. The PLACEMENT comes from the product's measured ground
-    bounds, never from an assumed z=0. The material is fixed and neutral by
-    design - the only floor knob is on/off, and product materials are never
-    touched.
+    material). The surface is a rotationally symmetric infinity cove: flat
+    disc under the product, tangent quarter-arc fillet, vertical wall. The
+    disc radius and wall height are derived per frame from the actual
+    camera's frame-corner rays (see required_floor_radius and
+    required_wall_height, in that order - the wall is sized against the
+    finished wall radius), so no plane edge or wall top can show inside the
+    frame against the HDRI backdrop. The PLACEMENT comes from the product's
+    measured ground bounds, never from an assumed z=0. The material is fixed
+    and neutral by design - the only floor knob is on/off, and product
+    materials are never touched.
     """
     if scene is None:
         scene = bpy.context.scene
     placement = _visible_product_ground() or (0.0, 0.0, 0.0)
-    legacy_min = max(radius * 14.0, 2.0)
     # No silent legacy fallback: without a scene camera the plane cannot be
     # sized to the visible frame, and a quietly small plane is exactly the
     # far-edge artifact floor mode exists to prevent. _camera_corner_rays
     # raises FLOOR_CAMERA_MISSING loudly in that case.
     corner_rays, camera_origin, camera_forward = _camera_corner_rays(scene)
+    if camera_origin[2] <= placement[2]:
+        raise RuntimeError(
+            "FLOOR_BEHIND_CAMERA: camera sits at/below the floor plane; a "
+            "cyclorama cannot be seated around a camera standing under it.")
     cam_data = scene.camera.data
     clip_end = float(getattr(cam_data, "clip_end", 200.0) or 200.0)
     aperture_radius_m = focus_distance_m = 0.0
@@ -1253,29 +1399,58 @@ def build_studio_floor(radius: float, scene=None):
         if f_stop > 0.0 and lens_mm > 0.0:
             aperture_radius_m = (lens_mm / (2.0 * f_stop)) / 1000.0
         focus_distance_m = float(getattr(dof, "focus_distance", 0.0) or 0.0)
-    derived_half = required_floor_half_extent(
+    derived_radius = required_floor_radius(
         corner_rays, placement, camera_origin, camera_forward,
         clip_end=clip_end, aperture_radius_m=aperture_radius_m,
         focus_distance_m=focus_distance_m)
-    derived_size = 2.0 * derived_half
-    size = max(legacy_min, derived_size)
-    provenance = (f"derived {derived_size:.2f} m from camera frame "
-                  f"corners vs legacy minimum {legacy_min:.2f} m")
-    bpy.ops.mesh.primitive_plane_add(size=size, location=placement)
-    floor = bpy.context.active_object
+    legacy_min = max(radius * 14.0, 2.0)
+    disc_radius = max(derived_radius, legacy_min)
+    # SHAPE constant, not a safety margin: the fillet scales with the
+    # product so a 0.5 m floor for a tiny product still gets a usable cove.
+    fillet_radius = max(2.0 * radius, 0.5)
+    wall_radius = disc_radius + fillet_radius
+    cam_radial = math.hypot(camera_origin[0] - placement[0],
+                            camera_origin[1] - placement[1])
+    if cam_radial >= wall_radius:
+        raise RuntimeError(
+            f"CYC_CAMERA_OUTSIDE: camera stands at/outside the cyclorama "
+            f"wall cylinder (radial {cam_radial:.2f} m >= wall radius "
+            f"{wall_radius:.2f} m); the coverage argument requires the "
+            f"camera inside the wall.")
+    # The r_c floor gives a nominal wall when every corner ray stays below
+    # the horizon; H is the profile height above the seat.
+    wall_height = max(required_wall_height(
+        corner_rays, placement, camera_origin, camera_forward, wall_radius,
+        clip_end=clip_end, aperture_radius_m=aperture_radius_m,
+        focus_distance_m=focus_distance_m), fillet_radius)
+    verts, faces = cyc_mesh_data(disc_radius, wall_height, fillet_radius,
+                                 placement)
+    mesh = bpy.data.meshes.new(FLOOR_OBJECT_NAME)
+    mesh.from_pydata(verts, [], faces)
+    if mesh.validate() is True:
+        raise RuntimeError(
+            "CYC_MESH_INVALID: mesh.validate() rejected the cyclorama "
+            "geometry; a silently 'fixed' mesh would differ from the "
+            "derived profile.")
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    floor = bpy.data.objects.new(FLOOR_OBJECT_NAME, mesh)
     floor.name = FLOOR_OBJECT_NAME
+    bpy.context.scene.collection.objects.link(floor)
     mat = bpy.data.materials.new(name=FLOOR_MATERIAL_NAME)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf:
         bsdf.inputs["Base Color"].default_value = hex_to_linear_rgb(
             FLOOR_COLOR_HEX)
-        bsdf.inputs["Roughness"].default_value = FLOOR_ROUGHNESS
+        bsdf.inputs["Roughness"].default_value = CYC_ROUGHNESS
     floor.data.materials.clear()
     floor.data.materials.append(mat)
-    print(f"[MSP Render] Studio floor created: {FLOOR_OBJECT_NAME} "
-          f"(size {size:.2f} m [{provenance}], seated at product ground "
-          f"z={placement[2]:.3f} m, neutral matte finish).")
+    print(f"[MSP Render] Studio cyclorama created: {FLOOR_OBJECT_NAME} "
+          f"(disc r={disc_radius:.2f} m [derived {derived_radius:.2f} m vs "
+          f"legacy minimum {legacy_min:.2f} m], fillet r={fillet_radius:.2f} m, "
+          f"wall to z={placement[2] + wall_height:.2f} m, seated at product "
+          f"ground z={placement[2]:.3f} m, neutral matte finish).")
     return floor
 
 
