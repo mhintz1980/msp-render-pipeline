@@ -438,11 +438,11 @@ class FloorRenderWorkerTests(unittest.TestCase):
         bpy.data.objects.get.return_value = None
         bpy.context.scene.objects = []
         with mock.patch.object(worker, "bpy", bpy):
-            steep = _FakeCamera(
-                _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10),
-                              _V(-1, 1, -10), _V(1, 1, -10)]),
-                _V(0, 0, 10))
-            floor = worker.build_studio_floor(1.5, scene=_FakeScene(steep))
+            # 3d target change: the build now runs the in-frame cove
+            # assertions, so the fake camera must frame the cove (a downward
+            # 3c-era fake puts the far tangent at the frame bottom).
+            floor = worker.build_studio_floor(
+                1.5, scene=_cove_camera((0.0, 0.0, 0.0), 1.5))
             self.assertEqual(floor.name, "MSP_StudioFloor")
             # The cyc is built with from_pydata; the floor build itself
             # makes zero primitive_plane_add calls.
@@ -468,13 +468,12 @@ class FloorRenderWorkerTests(unittest.TestCase):
         bpy.context.scene.objects = []
         mesh = bpy.data.meshes.new.return_value
         mesh.validate.return_value = True
-        steep = _FakeCamera(
-            _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10),
-                          _V(-1, 1, -10), _V(1, 1, -10)]),
-            _V(0, 0, 10))
+        # 3d target change: use a cove-framing camera; a downward fake now
+        # fails the in-frame cove gate before the mesh is ever built.
         with mock.patch.object(worker, "bpy", bpy):
             with self.assertRaisesRegex(RuntimeError, "CYC_MESH_INVALID"):
-                worker.build_studio_floor(1.5, scene=_FakeScene(steep))
+                worker.build_studio_floor(
+                    1.5, scene=_cove_camera((0.0, 0.0, 0.0), 1.5))
 
     def test_matte_render_restores_all_state_even_on_failure(self):
         worker = self._worker()
@@ -562,11 +561,9 @@ class FloorRenderWorkerTests(unittest.TestCase):
         bpy = mock.MagicMock()
         bpy.context.scene.objects = [product, hidden_slab]
         with mock.patch.object(worker, "bpy", bpy):
-            steep = _FakeCamera(
-                _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10),
-                              _V(-1, 1, -10), _V(1, 1, -10)]),
-                _V(0, 0, 10))
-            worker.build_studio_floor(1.5, scene=_FakeScene(steep))
+            # 3d target change: camera frames the cove around the seated axis.
+            worker.build_studio_floor(
+                1.5, scene=_cove_camera((0.5, -0.25, -0.3), 1.5))
         verts = (bpy.data.meshes.new.return_value.from_pydata.call_args.args[0])
         # The disc seats exactly at the measured product ground, centred on it.
         self.assertAlmostEqual(min(v[2] for v in verts), -0.3)
@@ -634,6 +631,62 @@ class _UpdatableFakeCamera:
         self.matrix_world = self._placed
 
 
+class _RotatedFakeMatrix:
+    """Orthonormal-basis + translation stand-in for a tilted mathutils matrix."""
+
+    def __init__(self, col0, col1, col2, translation):
+        self.col = [col0, col1, col2]
+        self.translation = translation
+
+    def __matmul__(self, v):
+        cols = self.col
+        return _V(cols[0].x * v.x + cols[1].x * v.y + cols[2].x * v.z
+                  + self.translation.x,
+                  cols[0].y * v.x + cols[1].y * v.y + cols[2].y * v.z
+                  + self.translation.y,
+                  cols[0].z * v.x + cols[1].z * v.y + cols[2].z * v.z
+                  + self.translation.z)
+
+
+def _cove_camera(placement, product_radial, daway=10.0, pitch_deg=13.96,
+                 yaw_deg=0.0):
+    """A perspective rig whose far-side cove tangent lands at row 0.35.
+
+    The camera sits at radial daway on the -y side of the cove axis, pitched
+    down pitch_deg, so the 3d in-frame assertions pass. Downward 3c-era fakes
+    cannot satisfy the new target (their far tangent projects to the frame
+    bottom), so the build_studio_floor tests use this camera.
+    """
+    import render_worker
+    px, py, pz = placement
+    fillet0 = max(2.0 * product_radial, 0.5)
+    wall_radius = max(daway + render_worker.COVE_CAM_CLEARANCE_M,
+                      product_radial + fillet0
+                      + render_worker.PRODUCT_FLOOR_MARGIN_M)
+    fillet = min(max(render_worker.COVE_FILLET_FRACTION * wall_radius, fillet0),
+                 render_worker.COVE_FILLET_MAX_FRACTION * wall_radius)
+    along = (wall_radius - fillet) + daway
+    half_v = math.tan(math.radians(8.37))
+    half_h = math.tan(math.radians(11.96))
+    pitch = math.radians(pitch_deg)
+    # Drop the camera so the far-side tangent projects to row 0.35 (ndc_y 0.30).
+    drop = along * (math.sin(pitch) - 0.30 * half_v * math.cos(pitch)) / (
+        math.cos(pitch) + 0.30 * half_v * math.sin(pitch))
+    yaw = math.radians(yaw_deg)
+    sin_y, cos_y = math.sin(yaw), math.cos(yaw)
+    sin_p, cos_p = math.sin(pitch), math.cos(pitch)
+    matrix = _RotatedFakeMatrix(
+        _V(cos_y, sin_y, 0.0),
+        _V(-sin_y * sin_p, cos_y * sin_p, cos_p),
+        _V(sin_y * cos_p, -cos_y * cos_p, sin_p),
+        _V(px + daway * sin_y, py - daway * cos_y, pz + drop))
+    corners = [_V(half_h, half_v, -1.0), _V(-half_h, half_v, -1.0),
+               _V(half_h, -half_v, -1.0), _V(-half_h, -half_v, -1.0)]
+    cam = _FakeCamera(_FakeCamData(corners), _V(0.0, 0.0, 0.0))
+    cam.matrix_world = matrix
+    return _FakeScene(cam)
+
+
 class FloorCameraMatrixFreshnessTests(unittest.TestCase):
     """The floor bound must be derived from the camera's evaluated transform,
     never a stale pre-depsgraph matrix_world (run2 az42 regression)."""
@@ -679,21 +732,26 @@ class FloorGeometricBoundTests(unittest.TestCase):
         import render_worker
         return render_worker
 
-    def test_perspective_corners_bound_the_half_extent(self):
+    def test_perspective_cove_profile_is_camera_radial_driven(self):
         worker = self._worker()
-        # Camera at (0,0,10), corner rays through local (±1,±1,-1): each
-        # hits z=0 at t=10, i.e. (±10,±10,0).
+        # 3d target change: the disc is no longer stretched to the
+        # frame-corner ground hits (that buried the cove and produced the az42
+        # band); the profile now follows the camera radial.
+        # Camera at (0,0,10), corner rays through local (+-1,+-1,-1): each hits
+        # z=0 at t=10, i.e. (+-10,+-10,0).
         rays = [((0.0, 0.0, 10.0), (sx, sy, -1.0))
                 for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
-        radius = worker.required_floor_radius(
-            rays, (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
-        # Euclidean radial metric: the coverage surface is a disc.
-        self.assertAlmostEqual(radius, 10.0 * math.sqrt(2.0) * 1.05)
-        # Disc centred off the hit cluster: the farthest hit sits at
-        # radial (12, 11) from the centre.
-        radius = worker.required_floor_radius(
-            rays, (2.0, -1.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0))
-        self.assertAlmostEqual(radius, math.hypot(12.0, 11.0) * 1.05)
+        floor_r, _, fillet, wall_r = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0), 0.5)
+        self.assertAlmostEqual(wall_r, worker.COVE_CAM_CLEARANCE_M)
+        self.assertAlmostEqual(floor_r, wall_r - fillet)
+        # Off-centre cove axis: cam_radial grows by the axis offset and the
+        # wall follows it.
+        _, _, _, wall_r2 = worker.required_cove_profile(
+            rays, [], (2.0, -1.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0), 0.5)
+        self.assertAlmostEqual(
+            wall_r2, math.hypot(2.0, 1.0) + worker.COVE_CAM_CLEARANCE_M)
+        self.assertGreater(wall_r2, wall_r)
 
     def test_direction_scale_leaves_extent_and_clipping_identical(self):
         """The ray parameter t is scale-bearing; extent and the clip gate
@@ -702,19 +760,23 @@ class FloorGeometricBoundTests(unittest.TestCase):
         camera_origin = (0.0, 0.0, 10.0)
         forward = (0.0, 0.0, -1.0)
         base = (3.0, 2.0, -1.0)
+        # 3d target change: the disc is no longer ray-derived, so its
+        # scale-invariance is retired. The derived PROFILE must still be
+        # direction-scale invariant (t is scale-bearing), and the clip gate
+        # still keys off the hit's axial depth.
         for scale in (0.1, 1.0, 10.0):
             rays = [(camera_origin,
                      (base[0] * scale, base[1] * scale, base[2] * scale))]
-            radius = worker.required_floor_radius(
-                rays, (0.0, 0.0, 0.0), camera_origin, forward,
-                clip_end=11.0)
+            floor_r = worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), camera_origin, forward, 0.5,
+                clip_end=11.0)[0]
             # Hit is fixed at (30, 20, 0); axial depth is 10 regardless of
             # the direction scale (t itself ranges 1..100).
-            self.assertAlmostEqual(radius, math.hypot(30.0, 20.0) * 1.05)
+            self.assertAlmostEqual(floor_r, 2.88)
             with self.assertRaisesRegex(RuntimeError,
                                         "FLOOR_EDGE_BEYOND_CLIP_END"):
-                worker.required_floor_radius(
-                    rays, (0.0, 0.0, 0.0), camera_origin, forward,
+                worker.required_cove_profile(
+                    rays, [], (0.0, 0.0, 0.0), camera_origin, forward, 0.5,
                     clip_end=10.0)
         # Wall variant: direction (3,0,4) crosses wall_radius 5 at
         # t = 5/(3s), so the crossing is fixed at z = 10 + 20/3 and the
@@ -754,23 +816,32 @@ class FloorGeometricBoundTests(unittest.TestCase):
 
     def test_camera_outside_the_wall_fails_loud(self):
         worker = self._worker()
+        # 3d target change: the 4 m clearance clamp makes CYC_CAMERA_OUTSIDE
+        # unreachable in normal use (wall_radius >= cam_radial + clearance),
+        # so the guard is exercised defensively by removing the clearance:
+        # wall_radius then equals cam_radial and the check must fire.
         bpy = mock.MagicMock()
         bpy.context.scene.objects = []
-        # Steep camera at radial 100 m whose ground hits (at (90, 0)) size
-        # the wall to r=95.5 m - inside the camera position, unrecoverable.
-        cam = _FakeCamera(_FakeCamData([_V(-1.0, 0.0, -1.0)] * 4),
-                          _V(100.0, 0.0, 10.0))
-        with mock.patch.object(worker, "bpy", bpy):
+        # clip_end raised so the guard under test, not the wall clip gate,
+        # is what fires.
+        cam = _FakeCamera(
+            _FakeCamData([_V(-1.0, 0.0, -1.0)] * 4, clip_end=1000.0),
+            _V(100.0, 0.0, 10.0))
+        with mock.patch.object(worker, "bpy", bpy), \
+                mock.patch.object(worker, "COVE_CAM_CLEARANCE_M", 0.0):
             with self.assertRaisesRegex(RuntimeError, "CYC_CAMERA_OUTSIDE"):
                 worker.build_studio_floor(0.5, scene=_FakeScene(cam))
 
     def test_hit_behind_camera_fails_loud(self):
         worker = self._worker()
-        # Camera below the floor plane looking down: t = (0-(-5))/-1 < 0.
+        # 3d target change: the behind-camera guard now lives in the cove
+        # profile's disc-hit scan. Camera below the floor plane looking down:
+        # t = (0-(-5))/-1 < 0.
         rays = [((0.0, 0.0, -5.0), (0.0, 0.0, -1.0))]
         with self.assertRaisesRegex(RuntimeError, "FLOOR_BEHIND_CAMERA"):
-            worker.required_floor_radius(
-                rays, (0.0, 0.0, 0.0), (0.0, 0.0, -5.0), (0.0, 0.0, -1.0))
+            worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), (0.0, 0.0, -5.0), (0.0, 0.0, -1.0),
+                0.5)
 
     def test_hit_beyond_clip_end_fails_loud(self):
         worker = self._worker()
@@ -778,20 +849,20 @@ class FloorGeometricBoundTests(unittest.TestCase):
         forward = (0.0, 0.0, -1.0)
         rays = [(camera_origin, (1.0, 0.0, -1.0))]  # hit at axial depth 10
         with self.assertRaisesRegex(RuntimeError, "FLOOR_EDGE_BEYOND_CLIP_END"):
-            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
-                                              camera_origin, forward,
-                                              clip_end=10.0)
+            worker.required_cove_profile(rays, [], (0.0, 0.0, 0.0),
+                                         camera_origin, forward, 0.5,
+                                         clip_end=10.0)
         # Axial depth 10 is far inside clip_end 100; it only trips when the
         # clip is tightened below the true axial depth.
         self.assertGreater(
-            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
-                                              camera_origin, forward,
-                                              clip_end=11.0), 0.0)
+            worker.required_cove_profile(rays, [], (0.0, 0.0, 0.0),
+                                         camera_origin, forward, 0.5,
+                                         clip_end=11.0)[0], 0.0)
         with self.assertRaisesRegex(RuntimeError,
                                     "FLOOR_EDGE_BEYOND_CLIP_END"):
-            worker.required_floor_radius(rays, (0.0, 0.0, 0.0),
-                                              camera_origin, forward,
-                                              clip_end=9.0)
+            worker.required_cove_profile(rays, [], (0.0, 0.0, 0.0),
+                                         camera_origin, forward, 0.5,
+                                         clip_end=9.0)
         # Wall variant: hit at axial depth 25/3 along a forward parallel to
         # the ray (direction (3,0,4) against wall_radius 5).
         rays = [((0.0, 0.0, 10.0), (3.0, 0.0, 4.0))]
@@ -807,18 +878,27 @@ class FloorGeometricBoundTests(unittest.TestCase):
 
     def test_dof_margin_adds_defocus_blur_radius(self):
         worker = self._worker()
+        # 3d target change: the disc radius is no longer ray-derived, so DOF
+        # no longer enters floor_radius; it enters the WALL HEIGHT instead.
         rays = [((0.0, 0.0, 10.0), (1.0, 1.0, -1.0))]
         camera_origin = (0.0, 0.0, 10.0)
         forward = (0.0, 0.0, -1.0)
-        plain = worker.required_floor_radius(
-            rays, (0.0, 0.0, 0.0), camera_origin, forward)
-        # 85 mm at f/3.2: aperture radius 13.28125 mm; hit at axial depth 10
-        # with focus at 5 -> blur radius a*|10-5|/5 = a.
+        # 85 mm at f/3.2: aperture radius 13.28125 mm.
         aperture = (85.0 / (2.0 * 3.2)) / 1000.0
-        with_dof = worker.required_floor_radius(
-            rays, (0.0, 0.0, 0.0), camera_origin, forward,
+        plain = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), camera_origin, forward, 0.5)
+        with_dof = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), camera_origin, forward, 0.5,
             aperture_radius_m=aperture, focus_distance_m=5.0)
-        self.assertAlmostEqual(with_dof - plain, aperture)
+        # Floor and fillet radii are DOF-independent.
+        self.assertAlmostEqual(plain[0], with_dof[0])
+        self.assertAlmostEqual(plain[2], with_dof[2])
+        # Wall height grows by the blur at the crossing's axial depth: the
+        # (1,1,-1) ray crosses wall_radius 4 at z=10-2*sqrt2, axial depth
+        # 2*sqrt2 -> blur a*|2*sqrt2 - 5|/5.
+        depth = 2.0 * math.sqrt(2.0)
+        self.assertAlmostEqual(with_dof[1] - plain[1],
+                               aperture * abs(depth - 5.0) / 5.0)
         # Wall variant: crossing at axial depth sqrt(2)*4 for direction
         # (1,0,1) against wall_radius 4 with a parallel forward.
         rays = [((0.0, 0.0, 10.0), (1.0, 0.0, 1.0))]
@@ -861,39 +941,43 @@ class FloorGeometricBoundTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "FLOOR_CAMERA_MISSING"):
             worker._camera_corner_rays(_FakeScene(None))
 
-    def test_build_derives_size_from_actual_camera_and_keeps_legacy_minimum(self):
+    def test_build_derives_size_from_the_cove_profile(self):
         worker = self._worker()
         bpy = mock.MagicMock()
         bpy.context.scene.objects = []
-        cam = _FakeCamera(
-            _FakeCamData([_V(-1, -1, -1), _V(1, -1, -1), _V(-1, 1, -1),
-                          _V(1, 1, -1)], clip_end=200.0, use_dof=True,
-                         aperture_fstop=3.2, focus_distance=5.0, lens=85.0),
-            _V(0, 0, 10))
+        # 3d target change: the 3c legacy minimum is retired and the disc is
+        # cove-derived, so this pins floor_radius == wall_radius - fillet and
+        # the wall radius the coverage assertions were computed against. A
+        # leftover legacy_min max would push the disc edge past wall_radius
+        # and invert the cove.
         with mock.patch.object(worker, "bpy", bpy):
-            worker.build_studio_floor(0.5, scene=_FakeScene(cam))
+            worker.build_studio_floor(
+                0.5, scene=_cove_camera((0.0, 0.0, 0.0), 0.5))
         verts = (bpy.data.meshes.new.return_value.from_pydata.call_args
                  .args[0])
-        # Corner hits at (±10,±10,0): disc radius = 10*sqrt(2)*1.05 + DOF
-        # blur 0.01328125; fillet r_c = 1.0; no upward corners -> H = r_c.
-        expected_disc = 10.0 * math.sqrt(2.0) * 1.05 + (85.0 / 6.4 / 1000.0)
-        max_radial = max(math.hypot(v[0], v[1]) for v in verts)
-        self.assertAlmostEqual(max_radial, expected_disc + 1.0)
-        self.assertAlmostEqual(max(v[2] for v in verts), 1.0)
+        fillet0 = max(2.0 * 0.5, 0.5)
+        wall_radius = max(10.0 + worker.COVE_CAM_CLEARANCE_M,
+                          0.5 + fillet0 + worker.PRODUCT_FLOOR_MARGIN_M)
+        fillet = min(max(worker.COVE_FILLET_FRACTION * wall_radius, fillet0),
+                     worker.COVE_FILLET_MAX_FRACTION * wall_radius)
+        floor_radius = wall_radius - fillet
+        self.assertAlmostEqual(
+            max(math.hypot(v[0], v[1]) for v in verts), wall_radius)
+        disc_radii = {round(math.hypot(v[0], v[1]), 6) for v in verts}
+        self.assertIn(round(floor_radius, 6), disc_radii)
+        self.assertAlmostEqual(max(v[2] for v in verts), fillet)
 
-        # A steep camera whose hits stay inside the legacy minimum keeps it:
-        # R = 7.0 = 0.5*14, r_c = 1.0, H = 1.0.
-        steep = _FakeCamera(
-            _FakeCamData([_V(-1, -1, -10), _V(1, -1, -10), _V(-1, 1, -10),
-                          _V(1, 1, -10)], clip_end=200.0),
-            _V(0, 0, 10))
+        # A larger product whose 2*radius shape rule beats 0.28*wall but stays
+        # under the 0.40*wall ceiling: the fillet lower clamp applies.
         with mock.patch.object(worker, "bpy", bpy):
-            worker.build_studio_floor(0.5, scene=_FakeScene(steep))
+            worker.build_studio_floor(
+                2.0, scene=_cove_camera((0.0, 0.0, 0.0), 2.0))
         verts = (bpy.data.meshes.new.return_value.from_pydata.call_args
                  .args[0])
-        max_radial = max(math.hypot(v[0], v[1]) for v in verts)
-        self.assertAlmostEqual(max_radial, 7.0 + 1.0)
-        self.assertAlmostEqual(max(v[2] for v in verts), 1.0)
+        self.assertAlmostEqual(
+            max(math.hypot(v[0], v[1]) for v in verts), wall_radius)
+        self.assertAlmostEqual(max(v[2] for v in verts),
+                               max(2.0 * 2.0, 0.5))
 
     def test_build_without_a_camera_fails_loud_no_silent_small_plane(self):
         worker = self._worker()
@@ -910,6 +994,232 @@ class FloorGeometricBoundTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,
                                         "FLOOR_CAMERA_MISSING"):
                 worker.build_studio_floor(1.5, scene=_FakeScene(None))
+
+
+class CoveProfileDerivationTests(unittest.TestCase):
+    """Batch-3d cove-in-frame derivation (spec 3.1-3.3): clamp chain, dense
+    top-edge scan, and the loud coverage/band gates."""
+
+    @staticmethod
+    def _worker():
+        import render_worker
+        return render_worker
+
+    def test_clearance_clamp_wins_for_a_small_product(self):
+        worker = self._worker()
+        rays = [((10.0, 0.0, 10.0), (-1.0, 0.0, -1.0))]
+        floor_r, wall_h, fillet, wall_r = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), (10.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+            0.5)
+        self.assertAlmostEqual(wall_r, 10.0 + worker.COVE_CAM_CLEARANCE_M)
+        self.assertAlmostEqual(wall_h, fillet)
+        self.assertAlmostEqual(floor_r, wall_r - fillet)
+
+    def test_product_clamp_beats_clearance_and_the_fillet_refuses(self):
+        # A product large enough to beat the clearance term also drives the
+        # 2*radius shape rule past the 0.40*wall ceiling, so the chain must
+        # refuse rather than emit inverted geometry.
+        worker = self._worker()
+        product = 5.0
+        fillet0 = max(2.0 * product, 0.5)
+        product_clamp = product + fillet0 + worker.PRODUCT_FLOOR_MARGIN_M
+        clearance_clamp = 10.0 + worker.COVE_CAM_CLEARANCE_M
+        self.assertGreater(product_clamp, clearance_clamp)
+        rays = [((10.0, 0.0, 10.0), (-1.0, 0.0, -1.0))]
+        with self.assertRaisesRegex(RuntimeError, "COVE_FILLET_CLAMP_INVALID"):
+            worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), (10.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+                product)
+
+    def test_fillet_clamp_fraction_lower_bound_and_ceiling(self):
+        worker = self._worker()
+        rays = [((10.0, 0.0, 10.0), (-1.0, 0.0, -1.0))]
+        origin = (10.0, 0.0, 10.0)
+        fwd = (0.0, 0.0, -1.0)
+        # Small product: the 0.28*wall target applies.
+        _, _, fillet, wall_r = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), origin, fwd, 0.5)
+        self.assertAlmostEqual(fillet, worker.COVE_FILLET_FRACTION * wall_r)
+        # Product 2.0: 2*product (4.0) beats 0.28*wall (3.92) but stays under
+        # 0.40*wall (5.6), so the lower clamp applies and the wall is unchanged.
+        _, _, fillet2, wall_r2 = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), origin, fwd, 2.0)
+        self.assertAlmostEqual(fillet2, 4.0)
+        self.assertAlmostEqual(wall_r2, wall_r)
+        # Forced low ceiling: the clamp returns the 0.40*wall ceiling, never a
+        # value above it.
+        with mock.patch.object(worker, "COVE_FILLET_MAX_FRACTION", 0.25):
+            _, _, fillet3, wall_r3 = worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), origin, fwd, 0.5)
+        self.assertAlmostEqual(fillet3, 0.25 * wall_r3)
+
+    def test_wall_height_uses_dense_top_edge_and_fillet_floor(self):
+        worker = self._worker()
+        origin = (0.0, 0.0, 10.0)
+        fwd = (0.0, 0.0, -1.0)
+        cyc = (0.0, 0.0, 0.0)
+        corners = [((0.0, 0.0, 10.0), (0.0, 0.0, -1.0))]  # disc-owned
+        top = [((0.0, 0.0, 10.0), (2.0, 0.0, -0.1))]       # misses the disc
+        # Corner-only would derive H = 0 (the disc owns it); the interior
+        # top-edge sample that misses the flat disc must raise the wall.
+        corner_only = worker.required_wall_height(
+            corners, cyc, origin, fwd, wall_radius=5.0, floor_radius=3.0)
+        dense = worker.required_wall_height(
+            corners + top, cyc, origin, fwd, wall_radius=5.0, floor_radius=3.0)
+        self.assertAlmostEqual(corner_only, 0.0)
+        self.assertGreater(dense, 0.0)
+
+    def test_below_horizon_disc_escape_and_fillet_dominance(self):
+        worker = self._worker()
+        origin = (0.0, 0.0, 10.0)
+        fwd = (0.0, 0.0, -1.0)
+        cyc = (0.0, 0.0, 0.0)
+        # A below-horizon ray that misses the flat disc raises H above fillet.
+        miss = [((0.0, 0.0, 10.0), (1.0, 0.0, -0.2))]
+        floor_r, wall_h, fillet, wall_r = worker.required_cove_profile(
+            miss, [], cyc, origin, fwd, 0.1)
+        self.assertGreater(wall_h, fillet)
+        self.assertAlmostEqual(floor_r, wall_r - fillet)
+        # The exact-value pin for the retired legacy minimum: the floor radius
+        # is exactly wall_radius - fillet_radius, never a max with anything.
+        self.assertAlmostEqual(
+            floor_r,
+            4.0 - min(max(worker.COVE_FILLET_FRACTION * 4.0, 0.5), 1.6))
+        # A below-horizon ray that lands on the disc keeps H = fillet.
+        inside = [((0.0, 0.0, 10.0), (0.2, 0.0, -1.0))]
+        _, wall_h2, fillet2, _ = worker.required_cove_profile(
+            inside, [], cyc, origin, fwd, 0.1)
+        self.assertAlmostEqual(wall_h2, fillet2)
+
+    def test_axis_aim_divergence_fires_beyond_tolerance(self):
+        worker = self._worker()
+        rays = [((0.0, 0.0, 10.0), (0.0, 0.0, -1.0))]
+        with self.assertRaisesRegex(RuntimeError, "COVE_AXIS_AIM_DIVERGENT"):
+            worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+                0.5, aim_xy=(0.5, 0.0))
+        profile = worker.required_cove_profile(
+            rays, [], (0.0, 0.0, 0.0), (0.0, 0.0, 10.0), (0.0, 0.0, -1.0),
+            0.5, aim_xy=(0.1, 0.0))
+        self.assertAlmostEqual(profile[3], 4.0)
+
+    def test_cove_ray_escape_fires_for_an_unreachable_vertex(self):
+        worker = self._worker()
+        # Defensive vertical-ray branch: the ray never meets the cylinder.
+        rays = [((0.0, 0.0, 10.0), (0.0, 0.0, 1.0))]
+        with self.assertRaisesRegex(RuntimeError, "COVE_RAY_ESCAPE"):
+            worker._assert_cove_rays_covered(
+                rays, (0.0, 0.0, 0.0), floor_radius=3.0, wall_radius=5.0,
+                wall_height=2.0)
+
+    def test_tangent_band_uses_the_far_side_and_fires_out_of_band(self):
+        worker = self._worker()
+        scene = _cove_camera((0.0, 0.0, 0.0), 0.5)
+        rays, origin, fwd = worker._camera_corner_rays(scene)
+        floor_r = worker.required_cove_profile(
+            rays, worker._camera_top_edge_rays(scene), (0.0, 0.0, 0.0), origin,
+            fwd, 0.5)[0]
+        row = worker._cove_tangent_row(scene, (0.0, 0.0, 0.0), floor_r, origin)
+        self.assertAlmostEqual(row, 0.35, places=2)
+        # A point behind the camera cannot be projected: both-axes filtering
+        # returns None rather than a garbage row (the -199.98 behind-camera
+        # garbage the raw preflight showed).
+        behind = worker._camera_ndc(
+            scene, (origin[0], origin[1] + 1.0, origin[2] + 5.0))
+        self.assertIsNone(behind)
+        # A band that excludes the real cove line makes the build fail loudly.
+        bpy = mock.MagicMock()
+        bpy.context.scene.objects = []
+        with mock.patch.object(worker, "bpy", bpy), \
+                mock.patch.object(worker, "COVE_TANGENT_ROW_BAND", (0.10, 0.20)):
+            with self.assertRaisesRegex(RuntimeError, "COVE_TANGENT_OUT_OF_BAND"):
+                worker.build_studio_floor(
+                    0.5, scene=_cove_camera((0.0, 0.0, 0.0), 0.5))
+
+    def test_floor_under_product_and_persp_required(self):
+        worker = self._worker()
+        rays = [((10.0, 0.0, 10.0), (-1.0, 0.0, -1.0))]
+        origin = (10.0, 0.0, 10.0)
+        fwd = (0.0, 0.0, -1.0)
+        # Forced near-total fillet: the cove floor can no longer clear the
+        # product footprint, so the guard must refuse.
+        with mock.patch.object(worker, "COVE_FILLET_FRACTION", 0.99), \
+                mock.patch.object(worker, "COVE_FILLET_MAX_FRACTION", 0.99):
+            with self.assertRaisesRegex(RuntimeError, "COVE_FLOOR_UNDER_PRODUCT"):
+                worker.required_cove_profile(
+                    rays, [], (0.0, 0.0, 0.0), origin, fwd, 2.0)
+        # An ORTHO camera breaks the inside-the-cylinder argument, so both the
+        # pure function and the build path refuse it.
+        with self.assertRaisesRegex(RuntimeError, "COVE_PERSP_REQUIRED"):
+            worker.required_cove_profile(
+                rays, [], (0.0, 0.0, 0.0), origin, fwd, 0.5,
+                camera_type="ORTHO")
+        bpy = mock.MagicMock()
+        bpy.context.scene.objects = []
+        ortho = _FakeCamera(
+            _FakeCamData([_V(-1, -1, -1), _V(1, -1, -1), _V(-1, 1, -1),
+                          _V(1, 1, -1)], cam_type="ORTHO"), _V(0, 0, 10))
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(RuntimeError, "COVE_PERSP_REQUIRED"):
+                worker.build_studio_floor(0.5, scene=_FakeScene(ortho))
+
+    def test_azimuth_invariance_is_a_tolerance(self):
+        worker = self._worker()
+        wall_radii = []
+        for yaw in (0.0, 120.0, 240.0):
+            scene = _cove_camera((0.0, 0.0, 0.0), 0.5, yaw_deg=yaw)
+            rays, origin, fwd = worker._camera_corner_rays(scene)
+            wall_radii.append(worker.required_cove_profile(
+                rays, worker._camera_top_edge_rays(scene), (0.0, 0.0, 0.0),
+                origin, fwd, 0.5)[3])
+        self.assertLessEqual(max(wall_radii) - min(wall_radii), 0.05)
+
+
+class BackgroundStepTests(unittest.TestCase):
+    """The cove-in-frame probe metric (spec 3.5)."""
+
+    @staticmethod
+    def _probe():
+        spec = importlib.util.spec_from_file_location(
+            "probe_sequence", ROOT / "scripts/probe_sequence.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        return probe
+
+    def test_known_step_is_measured_and_product_columns_ignored(self):
+        probe = self._probe()
+        height, width = 160, 40
+        mask = np.zeros((height, width), dtype=np.uint8)
+        mask[40:80, 10:30] = 255
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        image[:101] = 100
+        image[101:] = 140
+        image[:, 10:30] = 255  # hard step inside the product columns
+        measured = probe.measure_background_step(Image.fromarray(image),
+                                                 Image.fromarray(mask))
+        self.assertEqual(measured["num_rows"], height)
+        self.assertAlmostEqual(measured["max_step"], 40.0, places=3)
+        self.assertEqual(measured["step_row"], 101)
+
+    def test_a_smooth_gradient_has_a_small_step(self):
+        probe = self._probe()
+        height, width = 200, 30
+        mask = np.zeros((height, width), dtype=np.uint8)
+        rows = np.linspace(50, 150, height, dtype=np.uint8)
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        image[:] = rows[:, None, None]
+        measured = probe.measure_background_step(Image.fromarray(image),
+                                                 Image.fromarray(mask))
+        self.assertLess(measured["max_step"], 2.0)
+
+    def test_height_comes_from_the_image_not_a_default(self):
+        probe = self._probe()
+        for height in (24, 1250):
+            image = np.full((height, 8, 3), 90, dtype=np.uint8)
+            mask = np.zeros((height, 8), dtype=np.uint8)
+            measured = probe.measure_background_step(Image.fromarray(image),
+                                                     Image.fromarray(mask))
+            self.assertEqual(measured["num_rows"], height)
 
 
 def _cross(a, b):
@@ -1027,10 +1337,15 @@ class CycGeometryBlenderTests(unittest.TestCase):
                 "cam_data = bpy.data.cameras.new('Cam')\n"
                 "cam = bpy.data.objects.new('Cam', cam_data)\n"
                 "bpy.context.scene.collection.objects.link(cam)\n"
-                "cam.location = (0.0, 0.0, 10.0)\n"
-                # Tilted 30 degrees above the horizon so the frame corners
-                # derive a wall taller than the fillet (non-degenerate cove).
-                "cam.rotation_euler = (math.radians(120.0), 0.0, 0.0)\n"
+                "cam_data.lens = 85.0\n"
+                "bpy.context.scene.render.resolution_x = 1800\n"
+                "bpy.context.scene.render.resolution_y = 1250\n"
+                "bpy.context.scene.render.resolution_percentage = 100\n"
+                # 3d target change: the camera frames the cove (far tangent at
+                # row ~0.35) so the in-frame assertions pass; the 3c-era
+                # upward camera now fails the cove band, spec 3.3.
+                "cam.location = (0.0, -10.0, 4.0607)\n"
+                "cam.rotation_euler = (math.radians(76.04), 0.0, 0.0)\n"
                 "bpy.context.scene.camera = cam\n"
                 "obj = w.build_studio_floor(0.5)\n"
                 "failures = []\n"
@@ -1044,12 +1359,10 @@ class CycGeometryBlenderTests(unittest.TestCase):
                 "rays, origin, fwd = w._camera_corner_rays(bpy.context.scene)\n"
                 "seat = (0.0, 0.0, 0.0)\n"
                 "clip = float(cam_data.clip_end)\n"
-                "disc = max(w.required_floor_radius(rays, seat, origin, fwd,\n"
-                "          clip_end=clip), 7.0)\n"
-                "rc = max(2.0 * 0.5, 0.5)\n"
-                "wall_r = disc + rc\n"
-                "wall_h = max(w.required_wall_height(rays, seat, origin, fwd,\n"
-                "            wall_r, clip_end=clip), rc)\n"
+                "top_rays = w._camera_top_edge_rays(bpy.context.scene)\n"
+                "floor_r, wall_h, rc, wall_r = w.required_cove_profile(\n"
+                "    rays, top_rays, seat, origin, fwd, 0.5, clip_end=clip)\n"
+                "check('cove_floor', abs(floor_r - (wall_r - rc)) < 1e-6)\n"
                 "max_r = max(math.hypot(v.co.x, v.co.y) for v in mesh.vertices)\n"
                 "max_z = max(v.co.z for v in mesh.vertices)\n"
                 "min_z = min(v.co.z for v in mesh.vertices)\n"
@@ -1058,15 +1371,19 @@ class CycGeometryBlenderTests(unittest.TestCase):
                 "check('max_z', abs(max_z - wall_h) < 1e-4,\n"
                 "      f'{max_z} vs {wall_h}')\n"
                 "check('min_z', abs(min_z) < 1e-6, f'{min_z}')\n"
-                "top = [p for p in mesh.polygons\n"
-                "       if all(math.hypot(mesh.vertices[i].co.x,\n"
-                "                         mesh.vertices[i].co.y) > wall_r - 1e-3\n"
-                "              for i in p.vertices)]\n"
-                "check('top_ring_found', bool(top))\n"
-                "if top:\n"
-                "    vs = [mesh.vertices[i].co for i in top[0].vertices]\n"
-                "    n = (vs[1] - vs[0]).cross(vs[2] - vs[0])\n"
-                "    check('wall_normal_inward', n.dot(vs[0]) < 0, str(n))\n"
+                # 3d target change: on this rig wall_h == rc, so the wall
+                # segment is SKIPPED ([R4]) and the profile tops out on the
+                # quarter-arc at (wall_r, seat+rc). Check the arc-top ring
+                # reaches wall_r with an inward normal instead of a wall ring.
+                "check('wall_skipped', wall_h <= rc + 1e-9)\n"
+                "last_ring = mesh.polygons[-w.CYC_ANGULAR_SEGMENTS:]\n"
+                "vs = [mesh.vertices[i].co for i in last_ring[0].vertices]\n"
+                "n = (vs[1] - vs[0]).cross(vs[2] - vs[0])\n"
+                "check('arc_normal_inward', n.x * vs[0].x + n.y * vs[0].y < 0,\n"
+                "      str(n))\n"
+                "arc_top_r = max(math.hypot(v.x, v.y) for v in vs)\n"
+                "check('arc_tops_at_wall_r', abs(arc_top_r - wall_r) < 1e-4,\n"
+                "      f'{arc_top_r} vs {wall_r}')\n"
                 "mat = mesh.materials[0]\n"
                 "bsdf = mat.node_tree.nodes.get('Principled BSDF')\n"
                 "check('material', bsdf is not None)\n"
@@ -1075,11 +1392,10 @@ class CycGeometryBlenderTests(unittest.TestCase):
                 "          abs(bsdf.inputs['Roughness'].default_value - 0.7)\n"
                 "          < 1e-6,\n"
                 "          str(bsdf.inputs['Roughness'].default_value))\n"
-                "# Straight-down camera (rotation 0: the default camera\n"
-                "# looks down its local -Z): every corner ray is below\n"
-                "# the horizon - the production zero-nominal-wall case.\n"
-                "# 180 deg would point the camera UP, not down.\n"
-                "cam.rotation_euler = (math.radians(0.0), 0.0, 0.0)\n"
+                # Zero-nominal-wall (wall-skipped) profile: this rig already
+                # derives wall_h == rc, so a rebuild exercises the arc-topping
+                # geometry with no degenerate faces (a straight-down camera
+                # now fails the in-frame cove band, spec 3.3).
                 "bpy.data.objects.remove(obj, do_unlink=True)\n"
                 "obj2 = w.build_studio_floor(0.5)\n"
                 "check('steep_object_name', obj2.name == 'MSP_StudioFloor',\n"

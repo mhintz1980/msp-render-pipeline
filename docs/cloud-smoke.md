@@ -537,3 +537,78 @@ asymmetric light rig (accepted as normal); mirrored-half mean abs diff 29.35
 backdrop seam. **Owner look review is the open gate** — "looks good" from
 anyone else is not acceptance; no encode, no full orbit, no batch-4 work
 until Mark's explicit words.
+
+### 2026-09-22 batch-3d: cove-in-frame cyclorama — structural gates green, background-band gate FAILED on az42 as declared
+
+Owner verdict on 3c (2026-09-22): az222 good, az42 rejected ("identical to
+3b"). Pixel measurement confirmed 3c was a visual no-op (backgrounds within
+1.5/255 of 3b) because the 3c derivation put the cove OUTSIDE the frame
+(fillet at 55.65 m; frame-top rays land ~56 m). Root cause fixed in 3d:
+`required_floor_radius` deleted, replaced by `required_cove_profile`
+(disc sized just past the product; fillet+wall/arc carry the backdrop; dense
+65-sample top-edge scan per the spec-phase adversarial review; legacy minimum
+retired). Spec `output/batch3d-cove-inframe-spec.md` (DRAFT-2, 9 review
+findings incorporated), implementation by DeepSeek-Flash via ocx after a
+glm-5.3 attempt 429'd, implementation review by GLM via ocx (no code defects
+at BLOCKER; the deepseek reviewer seat 429'd mid-read, re-routed). Suite:
+**233 tests OK, exit 0** (venv interpreter, `${PIPESTATUS[0]}` checked; was
+220).
+
+**Preflight fidelity, now proven:** the 3c-era preflight/Modal divergence
+(52.19 vs 58.94 m) is root-caused to `view_frame()` shaping the frustum from
+the SCENE resolution; preflights must set the manifest resolution. The 3d
+preflight (real `build_studio_floor`, headless, NO render,
+`output/batch3d-preflight-final.py`) and the Modal run's new run-side
+derivation log agree field-for-field, both azimuths: corner ground radials
+[56.069, 2.865, 2.865, 56.069], top-edge max crossing z=1.920 m (65 samples;
+matches the reviewer's independent full-frame scan 1.9194), floor r=10.560,
+wall r=14.666, fillet r=4.107, wall segment SKIPPED (rim z=4.157, arc tops
+the profile; `cyc_mesh_data` strict `>` — documented regime), cove line
+row=0.323 (declared band 0.25-0.45), resolution 1800x1250@100%. 56.069 x 1.05
++ blur = 58.94 m reconciles the 3c run record exactly.
+
+**Dispatch (1 attempt, 2 frames, az 42 + 222):** run dir
+`output/preview-studio-floor-3d-20260922/`; Modal app ap-NeDqs7isloqsGUPQzUNOAt;
+estimate <= 3c's USD 0.197/dispatch; measured RATE-DERIVED NOT BILLED:
+280.877 container-s ≈ **USD 0.087** (all-in rate 0.00030992/s; no invoice
+queried).
+
+| Frame | Beauty | Render phase | Container s |
+|---|---|---|---|
+| az42 (cold, OptiX compile) | 252.81 s | 255.94 s | 267.135 |
+| az222 (warm) | 9.11 s | 12.04 s | 13.742 |
+
+Warm render phase 12.04 s vs the 10.2 s batch-1 baseline = **+18.0% — inside
+the declared +10-30% band** (3c: +17.5%).
+
+Gates: both frames Blender exit 0 with GPU-process evidence; dispatcher floor
+finishing `success` both frames; `probe_sequence --expect-frames 2
+--no-encode` — fidelity_gate_all_pass true, grain deterministic, no outlier
+frames. Matte coverage and mask==matte-alpha: unchanged mechanism, re-checked
+in the sequence report. Product luminance over mask==255 vs run3 plane:
+az42 116.988 vs 116.131 (**+0.74%**), az222 88.801 vs 87.136 (**+1.91%**) —
+small but larger than 3c's, consistent with the nearer wall occluding some
+low-elevation env light (the spec's declared risk).
+
+**NEW GATE, DECLARED 2026-09-22 (ruling 4):** background band step
+`measure_background_step` on composite-prelens.png (background columns =
+mask column max < 0.01; max |row-to-row| mean-luma delta; lens pass excluded
+— it inflates the metric via grain/bloom: az42 2.15 pre-lens vs 2.21
+post-lens on 3c). Threshold 1.8/255/row; provenance measured on the shipped
+3c artifacts with the same function: az42 defect 2.0623 (row 553), az222
+approved 0.6891.
+
+**GATE RESULT: az42 2.1536 (row 553) — FAIL (> 1.8). az222 0.7545 (row 3,
+frame-edge noise) — PASS.** The geometry did exactly what it was designed to
+do (cove line in frame at row 0.323, rim above frame, no ray escapes), but
+the az42 two-tone persists: the env lights the arc's upper region dark on
+that side (top-of-frame rows ≈ 92.5 vs 3c's far-floor 97-106), so the
+pool-edge contrast at row 553 barely moved. This is the spec's declared
+§7 fallback: the remaining mechanism is the ENV horizon-band (an asset round
+under ruling 2), not more geometry. No encode was run — a 2-frame probe
+supports no full-orbit claim. Vision read (parent): az222 unchanged from its
+approved character (smooth sweep, no seam); az42 upper background now shows
+a subtle arc gradient instead of a flat void, but the dark-backdrop/lit-floor
+step remains. Mirror-check markups regenerated per frame
+(`composite-prelens-mirror-check.png`). **Owner look review is the open
+gate**; a look rejection here is expected to resolve through the env round.

@@ -1070,6 +1070,17 @@ def _visible_product_ground():
 
 
 FLOOR_EDGE_MARGIN_RATIO = 0.05
+# Batch 3d cove-in-frame derivation constants (declared; ruling 4). The look
+# lives here, not in the manifest (ruling 2). Supersedes the batch-3c
+# "every frame corner hits FLAT floor" rule, whose flat far-floor expanse
+# read as a spotlight-in-a-void at az42.
+COVE_CAM_CLEARANCE_M = 4.0          # wall stands this far outside the camera
+COVE_FILLET_FRACTION = 0.28         # target fillet radius / wall radius
+COVE_FILLET_MAX_FRACTION = 0.40     # hard fillet ceiling as a wall fraction
+PRODUCT_FLOOR_MARGIN_M = 1.0        # floor must clear the product footprint
+COVE_AXIS_AIM_MAX_OFFSET_M = 0.25   # cove axis vs camera aim-point tolerance
+COVE_TOP_EDGE_SAMPLES = 65          # dense frame-top-edge scan (spec 3.2)
+COVE_TANGENT_ROW_BAND = (0.25, 0.45)  # in-frame row band for the cove line
 
 
 def _camera_corner_rays(scene):
@@ -1151,6 +1162,209 @@ def _camera_corner_rays(scene):
         f"mode.")
 
 
+def _camera_view_geometry(scene):
+    """Validated camera frame: (corners, matrix, origin, forward, type).
+
+    Runs the depsgraph update BEFORE reading matrix_world (the run2 stale
+    identity lesson) and raises the same loud codes _camera_corner_rays always
+    raised. Shared by the corner-ray and top-edge-ray builders so both sample
+    one evaluated transform.
+    """
+    camera = getattr(scene, "camera", None)
+    if camera is None:
+        raise RuntimeError(
+            "FLOOR_CAMERA_MISSING: floor mode needs a scene camera to derive "
+            "the cove profile; none was set.")
+    cam_data = camera.data
+    cam_type = getattr(cam_data, "type", "PERSP")
+    if bpy is not None:
+        try:
+            bpy.context.view_layer.update()
+        except AttributeError:
+            pass
+    matrix = camera.matrix_world
+    origin_v = matrix.translation
+    camera_origin = (origin_v.x, origin_v.y, origin_v.z)
+    z_col = matrix.col[2]
+    raw_forward = (-z_col.x, -z_col.y, -z_col.z)
+    forward_len = math.sqrt(raw_forward[0] ** 2 + raw_forward[1] ** 2
+                            + raw_forward[2] ** 2)
+    if forward_len <= 0.0:
+        raise RuntimeError(
+            "FLOOR_CAMERA_DEGENERATE: camera forward axis is zero-length; "
+            "cannot derive axial depth for the cove bound.")
+    camera_forward = (raw_forward[0] / forward_len,
+                      raw_forward[1] / forward_len,
+                      raw_forward[2] / forward_len)
+    try:
+        corners = cam_data.view_frame(scene=scene)
+    except Exception as exc:
+        raise RuntimeError(
+ f"FLOOR_VIEW_FRAME_FAILED: could not read the camera view frame: {exc}") from exc
+    return corners, matrix, camera_origin, camera_forward, cam_type
+
+
+def _matrix_apply(matrix, x, y, z):
+    """World point for camera-space (x, y, z): x*col0 + y*col1 + z*col2 + t.
+
+    Works with both a real mathutils matrix and the unit-test fakes, which
+    expose only col/translation.
+    """
+    t = matrix.translation
+    c0, c1, c2 = matrix.col[0], matrix.col[1], matrix.col[2]
+    return (x * c0.x + y * c1.x + z * c2.x + t.x,
+            x * c0.y + y * c1.y + z * c2.y + t.y,
+            x * c0.z + y * c1.z + z * c2.z + t.z)
+
+
+def _camera_top_edge_rays(scene, samples=COVE_TOP_EDGE_SAMPLES):
+    """Dense frame TOP-edge sample rays, endpoints included (spec 3.2, [R1]).
+
+    Mirrors _camera_corner_rays: PERSP rays originate at the camera centre,
+    ORTHO rays at the transformed top-edge points along the forward axis. The
+    top edge is the two view_frame corners with the greatest camera-space y,
+    so a shifted sensor is honoured. The corner+top-centre set is not a sound
+    bound on the frustum for off-axis rigs, so this scan is the soundness fix;
+    callers pass samples >= 65.
+    """
+    corners, matrix, camera_origin, camera_forward, cam_type = \
+        _camera_view_geometry(scene)
+    if samples < 2:
+        raise ValueError(
+            "COVE_TOP_EDGE_SAMPLES_INVALID: need at least 2 samples, got "
+            f"{samples}.")
+    top = sorted(corners, key=lambda corner: corner.y)[-2:]
+    ax, ay, az = top[0].x, top[0].y, top[0].z
+    bx, by, bz = top[1].x, top[1].y, top[1].z
+    rays = []
+    for k in range(samples):
+        f = k / (samples - 1)
+        world = _matrix_apply(matrix, ax + (bx - ax) * f,
+                              ay + (by - ay) * f, az + (bz - az) * f)
+        if cam_type == 'ORTHO':
+            rays.append((world, camera_forward))
+        else:
+            rays.append((camera_origin,
+                         (world[0] - camera_origin[0],
+                          world[1] - camera_origin[1],
+                          world[2] - camera_origin[2])))
+    return rays
+
+
+def _camera_ndc(scene, point):
+    """(ndc_x, ndc_y) in [-1, 1] for a world point, or None if unprojectable.
+
+    Built from the camera's view_frame corners, so a shifted sensor is
+    honoured; reads only matrix.col/translation and view_frame, so it works
+    with the unit-test fakes too. Behind-camera/degenerate points return None.
+    """
+    camera = scene.camera
+    corners = camera.data.view_frame(scene=scene)
+    matrix = camera.matrix_world
+    t = matrix.translation
+    c0, c1, c2 = matrix.col[0], matrix.col[1], matrix.col[2]
+
+    def _dot(a, b):
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    def _unit(v):
+        n = math.sqrt(_dot(v, v))
+        return None if n <= 0.0 else (v[0] / n, v[1] / n, v[2] / n)
+
+    bx = _unit((c0.x, c0.y, c0.z))
+    by = _unit((c1.x, c1.y, c1.z))
+    bz = _unit((c2.x, c2.y, c2.z))
+    if bx is None or by is None or bz is None:
+        return None
+    d = (point[0] - t.x, point[1] - t.y, point[2] - t.z)
+    zc = _dot(d, bz)
+    plane_z = corners[0].z
+    if zc >= 0.0 or plane_z == 0.0:
+        return None
+    scale = plane_z / zc
+    x_at = _dot(d, bx) * scale
+    y_at = _dot(d, by) * scale
+    xs = [corner.x for corner in corners]
+    ys = [corner.y for corner in corners]
+    left, right = min(xs), max(xs)
+    bottom, top = min(ys), max(ys)
+    if right <= left or top <= bottom:
+        return None
+    return (2.0 * (x_at - left) / (right - left) - 1.0,
+            2.0 * (y_at - bottom) / (top - bottom) - 1.0)
+
+
+def _cylinder_crossing_z(ray, cyc_center, wall_radius):
+    """Absolute z of the smallest positive cylinder crossing, or None."""
+    origin, direction = ray
+    center_x, center_y, _ = cyc_center
+    dx, dy = direction[0], direction[1]
+    a = dx * dx + dy * dy
+    if a <= 0.0:
+        return None
+    ox, oy = origin[0] - center_x, origin[1] - center_y
+    b = 2.0 * (ox * dx + oy * dy)
+    c = ox * ox + oy * oy - wall_radius * wall_radius
+    disc = b * b - 4.0 * a * c
+    if disc < 0.0:
+        return None
+    root = math.sqrt(disc)
+    best = None
+    for t in ((-b - root) / (2.0 * a), (-b + root) / (2.0 * a)):
+        if t > 0.0 and (best is None or t < best):
+            best = t
+    return None if best is None else origin[2] + best * direction[2]
+
+
+def _assert_cove_rays_covered(rays, cyc_center, floor_radius, wall_radius,
+                              wall_height):
+    """Loud COVE_RAY_ESCAPE if any frame ray escapes to the HDRI (spec 3.3).
+
+    A ray is covered when it terminates on the flat disc or crosses the wall
+    cylinder at/below the derived rim (wall_height). A ray that never meets
+    the cylinder at all (the defensive vertical branch) escapes.
+    """
+    center_x, center_y, seat_z = cyc_center
+    for index, (origin, direction) in enumerate(rays):
+        dz = direction[2]
+        if dz < 0.0:
+            t = (seat_z - origin[2]) / dz
+            if t > 0.0:
+                hit_x = origin[0] + t * direction[0]
+                hit_y = origin[1] + t * direction[1]
+                if math.hypot(hit_x - center_x, hit_y - center_y) \
+                        <= floor_radius:
+                    continue
+        cross_z = _cylinder_crossing_z((origin, direction), cyc_center,
+                                       wall_radius)
+        if cross_z is None or cross_z - seat_z > wall_height + 1e-9:
+            raise RuntimeError(
+                f"COVE_RAY_ESCAPE: frame ray {index} neither lands on the "
+                f"flat disc (r={floor_radius:.3f} m) nor crosses the wall "
+                f"cylinder (r={wall_radius:.3f} m) at/below the rim "
+                f"(z={seat_z + wall_height:.3f} m); the frustum escapes to "
+                f"the HDRI. Enlarge the cove or steepen the camera.")
+
+
+def _cove_tangent_row(scene, cyc_center, floor_radius, camera_origin):
+    """Projected row (0 top, 1 bottom) of the far-side cove tangent, or None.
+
+    The sample is the floor-to-fillet tangent point whose world azimuth is
+    OPPOSITE the camera (spec 3.3, [R6]); projections are kept only when both
+    |ndc x| <= 1 AND |ndc y| <= 1, so behind-camera garbage cannot masquerade
+    as an in-frame row.
+    """
+    center_x, center_y, seat_z = cyc_center
+    azimuth = math.atan2(camera_origin[1] - center_y,
+                         camera_origin[0] - center_x)
+    point = (center_x - floor_radius * math.cos(azimuth),
+             center_y - floor_radius * math.sin(azimuth), seat_z)
+    ndc = _camera_ndc(scene, point)
+    if ndc is None or abs(ndc[0]) > 1.0 or abs(ndc[1]) > 1.0:
+        return None
+    return (1.0 - ndc[1]) / 2.0
+
+
 def _cyc_dof_blur(axial_depth, aperture_radius_m, focus_distance_m):
     """Defocus blur disc radius at a hit's axial depth (0 when DOF is off)."""
     if aperture_radius_m > 0.0 and focus_distance_m > 0.0:
@@ -1159,53 +1373,82 @@ def _cyc_dof_blur(axial_depth, aperture_radius_m, focus_distance_m):
     return 0.0
 
 
-def required_floor_radius(corner_rays, cyc_center,
-                          camera_origin, camera_forward,
+def required_cove_profile(corner_rays, top_edge_rays, cyc_center,
+                          camera_origin, camera_forward, product_radial,
                           clip_end=200.0, aperture_radius_m=0.0,
-                          focus_distance_m=0.0):
-    """Disc radius needed so the cyc disc covers every below-horizon corner.
+                          focus_distance_m=0.0, camera_type="PERSP",
+                          aim_xy=None):
+    """Cove profile (floor, wall height, fillet, wall radius) for the frame.
 
-    Pure geometry: corner_rays is an iterable of (origin_xyz, direction_xyz)
-    float tuples in world space, cyc_center the (cx, cy, seat_z) of the
-    revolved surface. For each ray with direction_z < 0 the intersection
-    with the ground plane z=seat_z is solved analytically
-    (t = (seat_z - origin_z) / direction_z). The requirement is EUCLIDEAN
-    radial distance of the hit from the cyc axis - the coverage surface is
-    now a rotationally symmetric disc, not a square plane, so the old
-    Chebyshev max(|dx|, |dy|) metric would under-cover the diagonals it
-    used to round off. Rays with direction_z >= 0 are ignored here: the
-    concave fillet/wall owns them, and their coverage is derived separately
-    in required_wall_height against the FINISHED wall radius (order is
-    load-bearing - raising R afterwards would move the cylinder out from
-    under a wall height derived against the smaller one).
+    Replaces the batch-3c required_floor_radius target (spec 3.1): instead of
+    stretching the flat disc to the frame-top corner ray (which buried the
+    cove and produced the az42 flat-dark band), the disc is sized just past
+    the product and the fillet+wall carry everything above it. Pure geometry:
+    rays are (origin_xyz, direction_xyz) world tuples; cyc_center is the
+    (cx, cy, seat_z) of the revolved surface; product_radial is the manifest
+    product radius.
 
-    The parameter t is scale-bearing and never used directly as a distance:
-    the clip and DOF metrics use the hit's AXIAL DEPTH, the projection of
-    (hit - camera_origin) onto the normalized camera_forward - exactly what
-    Blender's clip_end measures. Directions may carry any positive scale:
-    direction*0.1 and direction*10 give identical results. A below-horizon
-    ray that hits behind the camera (t <= 0) or lands at/beyond clip_end
-    axially fails loudly - no silent guess can cover those frames.
+    Chain: wall_radius = max(cam_radial + clearance, product + fillet0 +
+    margin); fillet = clamp(fillet_fraction * wall_radius, fillet0,
+    fillet_max_fraction * wall_radius); floor_radius = wall_radius - fillet.
+    The 3c legacy minimum is RETIRED ([R2]) - floor_radius is authoritative,
+    so no max() can push the fillet arc past the wall radius the coverage
+    was derived against.
 
-    The returned radius is the max per-ray requirement: radial distance
-    grown by a small conservative margin (5%) plus, when depth of field is
-    on, the defocus blur disc radius at the hit's axial depth
-    (aperture_radius_m * |depth - focus| / focus) so the blurred far edge
-    still lands on geometry.
+    camera_type/aim_xy carry the two scene-side checks the pure signature
+    cannot express: an ORTHO camera is rejected ([R8]) because orthographic
+    corner-ray origins can fall outside the cylinder, and a cove axis that
+    diverges from the camera aim point by more than the tolerance is rejected
+    ([R1]) because the dense top-edge scan is only sound while they coincide.
     """
+    if camera_type != "PERSP":
+        raise RuntimeError(
+            f"COVE_PERSP_REQUIRED: the cove derivation assumes perspective "
+            f"rays originate at the camera centre; orthographic corner-ray "
+            f"origins can lie outside the wall cylinder (camera type "
+            f"{camera_type!r}).")
     center_x, center_y, seat_z = cyc_center
-    required = 0.0
     fwd_x, fwd_y, fwd_z = camera_forward
-    for index, (origin, direction) in enumerate(corner_rays):
+    cam_radial = math.hypot(camera_origin[0] - center_x,
+                            camera_origin[1] - center_y)
+    if aim_xy is not None:
+        offset = math.hypot(center_x - aim_xy[0], center_y - aim_xy[1])
+        if offset > COVE_AXIS_AIM_MAX_OFFSET_M:
+            raise RuntimeError(
+                f"COVE_AXIS_AIM_DIVERGENT: the cove axis "
+                f"({center_x:.3f}, {center_y:.3f}) differs from the camera "
+                f"aim point ({aim_xy[0]:.3f}, {aim_xy[1]:.3f}) by "
+                f"{offset:.3f} m > {COVE_AXIS_AIM_MAX_OFFSET_M:.2f} m; the "
+                f"dense top-edge scan is only sound while the two coincide.")
+    fillet0 = max(2.0 * product_radial, 0.5)
+    wall_radius = max(cam_radial + COVE_CAM_CLEARANCE_M,
+                      product_radial + fillet0 + PRODUCT_FLOOR_MARGIN_M)
+    lower = fillet0
+    upper = COVE_FILLET_MAX_FRACTION * wall_radius
+    if lower > upper:
+        raise RuntimeError(
+            f"COVE_FILLET_CLAMP_INVALID: the fillet clamp bounds invert "
+            f"(lower {lower:.3f} m > upper {upper:.3f} m); the shape rule "
+            f"cannot be satisfied at wall radius {wall_radius:.3f} m.")
+    fillet_radius = min(max(COVE_FILLET_FRACTION * wall_radius, lower), upper)
+    floor_radius = wall_radius - fillet_radius
+    if floor_radius < product_radial + PRODUCT_FLOOR_MARGIN_M:
+        raise RuntimeError(
+            f"COVE_FLOOR_UNDER_PRODUCT: cove floor radius {floor_radius:.3f} m "
+            f"is smaller than the product footprint plus margin "
+            f"({product_radial + PRODUCT_FLOOR_MARGIN_M:.3f} m); enlarge the "
+            f"camera clearance or shrink the fillet.")
+    all_rays = list(corner_rays) + [ray for ray in top_edge_rays]
+    for index, (origin, direction) in enumerate(all_rays):
         dz = direction[2]
         if dz >= 0.0:
             continue
         t = (seat_z - origin[2]) / dz
         if t <= 0.0:
             raise RuntimeError(
-                f"FLOOR_BEHIND_CAMERA: frame corner {index} ground "
-                f"intersection is behind the camera (t={t:.3f} <= 0; camera "
-                f"at/below the floor plane?).")
+                f"FLOOR_BEHIND_CAMERA: frame ray {index} ground intersection "
+                f"is behind the camera (t={t:.3f} <= 0; camera at/below the "
+                f"floor plane?).")
         hit_x = origin[0] + t * direction[0]
         hit_y = origin[1] + t * direction[1]
         hit_z = origin[2] + t * direction[2]
@@ -1214,26 +1457,26 @@ def required_floor_radius(corner_rays, cyc_center,
                        + (hit_z - camera_origin[2]) * fwd_z)
         if axial_depth >= clip_end:
             raise RuntimeError(
-                f"FLOOR_EDGE_BEYOND_CLIP_END: frame corner {index} ground hit "
-                f"is at axial depth {axial_depth:.2f} m (measured along the "
+                f"FLOOR_EDGE_BEYOND_CLIP_END: frame ray {index} ground hit is "
+                f"at axial depth {axial_depth:.2f} m (measured along the "
                 f"normalized camera forward axis), at/beyond the camera "
                 f"clip_end of {clip_end:.2f} m; the far floor edge would be "
                 f"clipped. Raise clip_end or steepen the camera.")
-        radial = math.hypot(hit_x - center_x, hit_y - center_y)
-        need = (radial * (1.0 + FLOOR_EDGE_MARGIN_RATIO)
-                + _cyc_dof_blur(axial_depth, aperture_radius_m,
-                                focus_distance_m))
-        required = max(required, need)
-    return required
+    wall_height = max(required_wall_height(
+        all_rays, cyc_center, camera_origin, camera_forward, wall_radius,
+        clip_end=clip_end, aperture_radius_m=aperture_radius_m,
+        focus_distance_m=focus_distance_m, floor_radius=floor_radius),
+        fillet_radius)
+    return floor_radius, wall_height, fillet_radius, wall_radius
 
 
-def required_wall_height(corner_rays, cyc_center,
+def required_wall_height(rays, cyc_center,
                          camera_origin, camera_forward, wall_radius,
                          clip_end=200.0, aperture_radius_m=0.0,
-                         focus_distance_m=0.0):
+                         focus_distance_m=0.0, floor_radius=None):
     """Wall height (above the seat) so the cyc wall covers above-horizon rays.
 
-    Pure geometry, the companion of required_floor_radius and derived AGAINST
+    Pure geometry, the companion of required_cove_profile and derived AGAINST
     the finished wall radius (see the ordering note there). For each ray with
     direction_z >= 0 the intersection with the wall cylinder
     |P_xy - c_xy|^2 = wall_radius^2 is solved as a quadratic in t; the
@@ -1244,21 +1487,35 @@ def required_wall_height(corner_rays, cyc_center,
     there is always exactly one positive root; the no-root branch is
     defensive.
 
+    Batch 3d ([R1]): with floor_radius supplied, a BELOW-horizon ray whose
+    ground hit lands beyond the flat disc is no longer ignored - it is fed
+    through the same cylinder crossing, because the disc cannot own it. With
+    floor_radius None the legacy behaviour (below-horizon rays ignored) is
+    kept for the pure-function callers. Direction_z >= 0 rays are handled
+    exactly as before.
+
     The requirement is (z_hit - seat_z) grown by the 5% margin plus DOF
     blur at the hit's axial depth. The fillet lies strictly inside the
     cylinder, so the true concave hit happens no later than this
     cylinder-crossing height - using the crossing is conservative and
-    correct. Rays with direction_z < 0 are ignored here (the disc owns
-    them). Directions may carry any positive scale; results depend only on
+    correct. Directions may carry any positive scale; results depend only on
     hit points and axial depths.
     """
     center_x, center_y, seat_z = cyc_center
     required = 0.0
     fwd_x, fwd_y, fwd_z = camera_forward
-    for index, (origin, direction) in enumerate(corner_rays):
+    for index, (origin, direction) in enumerate(rays):
         dz = direction[2]
         if dz < 0.0:
-            continue
+            if floor_radius is None:
+                continue
+            t_ground = (seat_z - origin[2]) / dz
+            if t_ground > 0.0:
+                ground_x = origin[0] + t_ground * direction[0]
+                ground_y = origin[1] + t_ground * direction[1]
+                if math.hypot(ground_x - center_x, ground_y - center_y) \
+                        <= floor_radius:
+                    continue
         dx, dy = direction[0], direction[1]
         ox, oy = origin[0] - center_x, origin[1] - center_y
         a = dx * dx + dy * dy
@@ -1367,29 +1624,34 @@ def build_studio_floor(radius: float, scene=None):
     defences cannot eat it) and AFTER the photorealism pass (so no generic
     material pass - CAD polish, bevel injection - can touch its fixed neutral
     material). The surface is a rotationally symmetric infinity cove: flat
-    disc under the product, tangent quarter-arc fillet, vertical wall. The
-    disc radius and wall height are derived per frame from the actual
-    camera's frame-corner rays (see required_floor_radius and
-    required_wall_height, in that order - the wall is sized against the
-    finished wall radius), so no plane edge or wall top can show inside the
-    frame against the HDRI backdrop. The PLACEMENT comes from the product's
-    measured ground bounds, never from an assumed z=0. The material is fixed
-    and neutral by design - the only floor knob is on/off, and product
-    materials are never touched.
+    disc under the product, tangent quarter-arc fillet, vertical wall.
+
+    Batch-3d target (supersedes batch 3c): the disc is sized just past the
+    product and the fillet+wall carry the backdrop, so the floor->cove line
+    lands INSIDE the frame (rows 0.25-0.45 on the far side) instead of the
+    flat disc stretching to the frame-top corner ray and showing a flat-dark
+    far floor. The profile comes from required_cove_profile against the actual
+    perspective camera; the escape and in-frame-band assertions fail loudly
+    rather than ship a frame the cove cannot cover. The PLACEMENT comes from
+    the product's measured ground bounds, never from an assumed z=0. The
+    material is fixed and neutral by design - the only floor knob is on/off,
+    and product materials are never touched.
     """
     if scene is None:
         scene = bpy.context.scene
     placement = _visible_product_ground() or (0.0, 0.0, 0.0)
-    # No silent legacy fallback: without a scene camera the plane cannot be
-    # sized to the visible frame, and a quietly small plane is exactly the
+    # No silent legacy fallback: without a scene camera the cove cannot be
+    # sized to the visible frame, and a quietly small cove is exactly the
     # far-edge artifact floor mode exists to prevent. _camera_corner_rays
     # raises FLOOR_CAMERA_MISSING loudly in that case.
     corner_rays, camera_origin, camera_forward = _camera_corner_rays(scene)
+    top_edge_rays = _camera_top_edge_rays(scene)
     if camera_origin[2] <= placement[2]:
         raise RuntimeError(
             "FLOOR_BEHIND_CAMERA: camera sits at/below the floor plane; a "
             "cyclorama cannot be seated around a camera standing under it.")
     cam_data = scene.camera.data
+    cam_type = getattr(cam_data, "type", "PERSP")
     clip_end = float(getattr(cam_data, "clip_end", 200.0) or 200.0)
     aperture_radius_m = focus_distance_m = 0.0
     dof = getattr(cam_data, "dof", None)
@@ -1399,16 +1661,22 @@ def build_studio_floor(radius: float, scene=None):
         if f_stop > 0.0 and lens_mm > 0.0:
             aperture_radius_m = (lens_mm / (2.0 * f_stop)) / 1000.0
         focus_distance_m = float(getattr(dof, "focus_distance", 0.0) or 0.0)
-    derived_radius = required_floor_radius(
-        corner_rays, placement, camera_origin, camera_forward,
-        clip_end=clip_end, aperture_radius_m=aperture_radius_m,
-        focus_distance_m=focus_distance_m)
-    legacy_min = max(radius * 14.0, 2.0)
-    disc_radius = max(derived_radius, legacy_min)
-    # SHAPE constant, not a safety margin: the fillet scales with the
-    # product so a 0.5 m floor for a tiny product still gets a usable cove.
-    fillet_radius = max(2.0 * radius, 0.5)
-    wall_radius = disc_radius + fillet_radius
+    # The camera aims at the get_scene_bounds() centre (all mesh objects,
+    # hidden ones included) while the cove axis is the visible-product ground
+    # - two different object sets. Outside Blender (no mathutils) the aim
+    # degrades to the cove axis, so the divergence check is a Blender-side
+    # invariant.
+    aim_xy = None
+    if mathutils is not None:
+        aim_center, _ = get_scene_bounds()
+        aim_xy = (float(aim_center[0]), float(aim_center[1]))
+    floor_radius, wall_height, fillet_radius, wall_radius = \
+        required_cove_profile(
+            corner_rays, top_edge_rays, placement, camera_origin,
+            camera_forward, radius, clip_end=clip_end,
+            aperture_radius_m=aperture_radius_m,
+            focus_distance_m=focus_distance_m, camera_type=cam_type,
+            aim_xy=aim_xy)
     cam_radial = math.hypot(camera_origin[0] - placement[0],
                             camera_origin[1] - placement[1])
     if cam_radial >= wall_radius:
@@ -1417,13 +1685,55 @@ def build_studio_floor(radius: float, scene=None):
             f"wall cylinder (radial {cam_radial:.2f} m >= wall radius "
             f"{wall_radius:.2f} m); the coverage argument requires the "
             f"camera inside the wall.")
-    # The r_c floor gives a nominal wall when every corner ray stays below
-    # the horizon; H is the profile height above the seat.
-    wall_height = max(required_wall_height(
-        corner_rays, placement, camera_origin, camera_forward, wall_radius,
-        clip_end=clip_end, aperture_radius_m=aperture_radius_m,
-        focus_distance_m=focus_distance_m), fillet_radius)
-    verts, faces = cyc_mesh_data(disc_radius, wall_height, fillet_radius,
+    all_rays = corner_rays + top_edge_rays
+    _assert_cove_rays_covered(all_rays, placement, floor_radius, wall_radius,
+                              wall_height)
+    tangent_row = _cove_tangent_row(scene, placement, floor_radius,
+                                    camera_origin)
+    if tangent_row is None:
+        raise RuntimeError(
+            "COVE_TANGENT_OUT_OF_BAND: the far-side floor-to-fillet tangent "
+            "does not project inside the frame; the cove line must land in "
+            f"frame within rows {COVE_TANGENT_ROW_BAND[0]:.2f}-"
+            f"{COVE_TANGENT_ROW_BAND[1]:.2f}.")
+    if not (COVE_TANGENT_ROW_BAND[0] <= tangent_row
+            <= COVE_TANGENT_ROW_BAND[1]):
+        raise RuntimeError(
+            f"COVE_TANGENT_OUT_OF_BAND: the far-side cove line projects to "
+            f"row {tangent_row:.3f}, outside the declared band "
+            f"{COVE_TANGENT_ROW_BAND[0]:.2f}-{COVE_TANGENT_ROW_BAND[1]:.2f}.")
+    # Run-side derivation log (spec 3.4): every input on one line so a
+    # preflight-vs-Modal resolution divergence is visible without a render.
+    corner_hit_radials = []
+    for origin, direction in corner_rays:
+        if direction[2] < 0.0:
+            t = (placement[2] - origin[2]) / direction[2]
+            if t > 0.0:
+                hit_x = origin[0] + t * direction[0]
+                hit_y = origin[1] + t * direction[1]
+                corner_hit_radials.append(
+                    round(math.hypot(hit_x - placement[0],
+                                     hit_y - placement[1]), 3))
+    top_cross = [z - placement[2]
+                 for z in (_cylinder_crossing_z(ray, placement, wall_radius)
+                           for ray in top_edge_rays) if z is not None]
+    try:
+        resolution = (f"{scene.render.resolution_x}x"
+                      f"{scene.render.resolution_y}"
+                      f"@{scene.render.resolution_percentage}%")
+    except AttributeError:
+        resolution = "unknown"
+    print(f"[MSP Render] Cove derivation: cam=({camera_origin[0]:.3f}, "
+          f"{camera_origin[1]:.3f}, {camera_origin[2]:.3f}) "
+          f"cam_radial={cam_radial:.3f} m, corner ground radials="
+          f"{corner_hit_radials}, top-edge max crossing z="
+          f"{placement[2] + (max(top_cross) if top_cross else 0.0):.3f} m "
+          f"({len(top_edge_rays)} samples), floor r={floor_radius:.3f} m "
+          f"wall r={wall_radius:.3f} m fillet r={fillet_radius:.3f} m, wall "
+          f"{'present' if wall_height > fillet_radius else 'skipped'} rim z="
+          f"{placement[2] + wall_height:.3f} m, cove line row="
+          f"{tangent_row:.3f}, resolution {resolution}.")
+    verts, faces = cyc_mesh_data(floor_radius, wall_height, fillet_radius,
                                  placement)
     mesh = bpy.data.meshes.new(FLOOR_OBJECT_NAME)
     mesh.from_pydata(verts, [], faces)
@@ -1447,10 +1757,11 @@ def build_studio_floor(radius: float, scene=None):
     floor.data.materials.clear()
     floor.data.materials.append(mat)
     print(f"[MSP Render] Studio cyclorama created: {FLOOR_OBJECT_NAME} "
-          f"(disc r={disc_radius:.2f} m [derived {derived_radius:.2f} m vs "
-          f"legacy minimum {legacy_min:.2f} m], fillet r={fillet_radius:.2f} m, "
-          f"wall to z={placement[2] + wall_height:.2f} m, seated at product "
-          f"ground z={placement[2]:.3f} m, neutral matte finish).")
+          f"(floor r={floor_radius:.2f} m, wall r={wall_radius:.2f} m, "
+          f"fillet r={fillet_radius:.2f} m, "
+          f"{'wall' if wall_height > fillet_radius else 'wall-skipped'} rim to "
+          f"z={placement[2] + wall_height:.2f} m, seated at product ground "
+          f"z={placement[2]:.3f} m, neutral matte finish).")
     return floor
 
 

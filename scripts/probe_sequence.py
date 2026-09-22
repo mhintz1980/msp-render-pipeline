@@ -34,6 +34,10 @@ from composite_worker import MSPCompositor
 # set, never widened because a run missed them.
 PSNR_FLOOR_DB = 35.0
 NEIGHBOUR_OUTLIER_FACTOR = 3.0
+# Batch 3d cove-in-frame gate: the biggest background row-to-row luminance
+# step allowed on composite-prelens.png. Declared 2026-09-22 from measured
+# provenance - az42 defect 2.0624, az222 approved 0.6891 - a 12.6% margin.
+BACKGROUND_STEP_MAX_PER_ROW = 1.8
 
 
 def sha(path):
@@ -98,6 +102,38 @@ def sequence_report(scalars, maes, digests, azimuths):
     return {"max_abs_second_difference": smooth, "frame_mae_median": med,
             "frame_mae_max": float(np.max(maes)) if maes else 0.0,
             "outlier_frames": outliers, "problems": problems}
+
+
+def measure_background_step(image_rgb, mask):
+    """Max absolute row-to-row change of background mean luminance (spec 3.5).
+
+    Background columns are those the product matte never covers (column max <
+    0.01); per-row mean luminance is taken over those columns, and the metric
+    is the largest absolute difference between consecutive rows. num_rows
+    comes from the image, never a hardcoded default, so the metric cannot
+    drift with an assumed resolution.
+
+    The gate consumes composite-prelens.png: the lens pass inflates the metric
+    through grain and bloom and would false-fail a fixed frame near the line.
+    The full row profile is returned too, because the row-mean metric smooths
+    a slanted step; a failure is information for the owner look, never a
+    silently widened threshold (ruling 4).
+    """
+    rgb = np.array(image_rgb.convert("RGB"), dtype=np.float32)
+    luma = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    alpha = np.array(mask.convert("L"), dtype=np.float32) / 255.0
+    num_rows = int(luma.shape[0])
+    columns = alpha.max(axis=0) < 0.01
+    if not columns.any():
+        raise ValueError(
+            "NO_BACKGROUND_COLUMNS: the mask covers every column; the "
+            "background band step cannot be measured.")
+    row_means = luma[:, columns].mean(axis=1)
+    deltas = np.abs(np.diff(row_means))
+    return {"num_rows": num_rows,
+            "max_step": float(deltas.max()) if deltas.size else 0.0,
+            "step_row": int(np.argmax(deltas)) + 1 if deltas.size else 0,
+            "row_profile": [float(value) for value in row_means]}
 
 
 def psnr(a, b):
@@ -198,6 +234,7 @@ def main():
 
     results, scalars, maes, digests, azimuths = [], [], [], [], []
     pre_lens = []
+    background_pre, background_lens = [], []
     for index, beauty in enumerate(frames):
         frame_dir = beauty.parent
         azimuth = frame_azimuth(run_dir, frame_dir)
@@ -222,6 +259,11 @@ def main():
             rgb, vignette=args.lens_vignette, bloom=args.lens_bloom,
             grain=args.lens_grain, frame_index=index)
         lensed.save(frame_dir / "composite-lens.png")
+        if floor_on:
+            # Report both pre-lens and post-lens values (spec 3.5); the gate
+            # itself consumes the pre-lens metric.
+            background_pre.append(measure_background_step(rgb, mask))
+            background_lens.append(measure_background_step(lensed, mask))
 
     for i in range(1, len(pre_lens)):
         maes.append(frame_mae(pre_lens[i], pre_lens[i - 1],
@@ -251,6 +293,19 @@ def main():
     report["grain_deterministic"] = grain_deterministic
     if not grain_deterministic:
         report["problems"].append("GRAIN_NOT_DETERMINISTIC")
+    if floor_on:
+        report["background_step_prelens"] = [
+            {"azimuth": azimuth, **measured}
+            for azimuth, measured in zip(azimuths, background_pre)]
+        report["background_step_lens"] = [
+            {"azimuth": azimuth, **measured}
+            for azimuth, measured in zip(azimuths, background_lens)]
+        for azimuth, measured in zip(azimuths, background_pre):
+            if measured["max_step"] > BACKGROUND_STEP_MAX_PER_ROW:
+                report["problems"].append(
+                    f"BACKGROUND_BAND_STEP: az{azimuth:g} "
+                    f"{measured['max_step']:.4f} > "
+                    f"{BACKGROUND_STEP_MAX_PER_ROW} (pre-lens)")
 
     if not args.no_encode:
         concat = run_dir / "lens-frames"
