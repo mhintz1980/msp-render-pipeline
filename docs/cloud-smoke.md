@@ -612,3 +612,58 @@ a subtle arc gradient instead of a flat void, but the dark-backdrop/lit-floor
 step remains. Mirror-check markups regenerated per frame
 (`composite-prelens-mirror-check.png`). **Owner look review is the open
 gate**; a look rejection here is expected to resolve through the env round.
+
+### 2026-09-22 batch-3e: env horizon-band round — az42 gate FAILS at 1.9745; env-only mechanism DISCONFIRMED by the pre-declared criterion; analytic rig implicated
+
+Spec/review chain (all in `output/`, gitignored evidence):
+`batch3e-env-horizon-spec.md` DRAFT-2 (12 GLM spec-review findings
+incorporated), `batch3e-env-horizon-derivation.md` + section 8 revision
+(DeepSeek derivation seat; found the 3c-era provenance framing and
+DISPUTED its own premise), `batch3e-deriv-review-glm.md` (BLOCKER: the
+proportional-rig calibration is structurally optimistic; band extended
++20 -> +30), `batch3e-impl-lean-dispatch.md` (pinned design after two
+429-truncated exploration attempts), `batch3e-impl-review-glm.md`
+(SHIP-TO-PROBE with hygiene findings). Pair protocol per owner
+instruction 2026-09-22: DeepSeek worker / GLM adversarial reviewer,
+cross-family, roles flip next task.
+
+**Asset round (ruling 2):** `scripts/build_studio_softbox_env.py` gained a
+`horizon-lift` profile (window [-20,+30] deg elevation, core [-14,+24],
+lift +0.30 linear + 0.085 negfill compensation, composed FROM the v1
+bytes, out-of-band rows array_equal); new asset
+`backgrounds/env_studio-softbox-v2.png` sha256 `617e63a7de1a9833...`;
+`jobs/rl300_05_studio-floor.json` `lighting.hdri_path` flipped (that key
+only; `rl300_04_studio-white.json` stays on v1 deliberately). Accepted
+profile byte-identity re-verified under venv: default output sha256
+`bf67d7ea...` unchanged. Suite: **239 tests OK, exit 0** (venv,
+`${PIPESTATUS[0]}`; was 233; first direct generator tests).
+
+**Dispatch (1 attempt, 2 frames, az 42 + 222):** run dir
+`output/preview-studio-floor-3e-20260922/`; Modal app
+ap-CmU9cBQMWw813r1FgNCQVD; estimate USD 0.197; measured RENDER seconds
+222.519 (az42, cold) + 13.176 (az222) = 235.695 s -> **USD 0.073
+RATE-DERIVED** (all-in rate 0.00030992/s; no invoice queried). Warm
+render 13.176 s vs 3d's 12.04 s = +9.4%. `probe_sequence --expect-frames
+2 --no-encode`: fidelity_gate_all_pass true, grain deterministic.
+
+**GATE RESULT: az42 1.9745 (row 552) — FAIL (> 1.8). az222 0.7901
+(row 3, frame-edge artefact, unchanged character) — PASS.** The lift
+improved az42 2.1536 -> 1.9745 (-8.3%) but the 1.5 falsification line is
+crossed: **the pre-declared criterion DISCONFIRMS the env-only
+mechanism** — the derivation seat's contested measurement (az42 right
+background segment carries the defect on byte-identical env columns;
+floor plateau differs 38 bytes at azimuth-invariant diffuse irradiance)
+points at the world-fixed analytic rig (Key_Softbox world az ~45). The
+rig round is the evidence-backed next mechanism.
+
+**Known defects, owner sign-off pending (recorded in derivation section
+8):** (1) spec's "worst azimuth step <= half v1" bar missed (ratios 0.529
+narrow / 0.676 extended) — test pins measured numbers and asserts strict
+improvement; (2) LDR headroom constraint-11 band-local reading violated
+(pre-clip max 1.29997 where v1 already clips; 13,541 band pixels newly
+clipped) — declared interpretation, needs owner words; (3) "no new sharp
+edge" inverted: worst smoothed elevational gradient rose 18.96 -> 33.19
+byte/deg (falling taper x negfill comp, feature at az ~259 el ~28.4) —
+outside both probe cameras' frames but some orbit azimuth (~bg 79) will
+image it in video. Cheap hardening for the next dispatch: refuse to
+write ACCEPTED_OUTPUT without a sha guard (GLM impl review finding 7).
