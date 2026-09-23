@@ -33,7 +33,7 @@
     "intensity_multiplier": 0.7,
     "analytic_lights": true,
     "shadow_catcher": false,
-    "hdri_path": "backgrounds/env_studio-softbox.png",
+    "hdri_path": "backgrounds/env_studio-softbox-v2.png",
     "hdri_strength": 2.0,
     "hdri_rotation_deg": 0.0,
     "floor": {

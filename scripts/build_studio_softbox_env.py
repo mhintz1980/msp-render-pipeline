@@ -21,6 +21,26 @@ near 2.0 and the walls near 0.2.
 
 This map is for `lighting.hdri_path` only. The visible backdrop stays
 `env_studio-white.png` via `compositing.background_plate`.
+
+Two profiles, one generator
+---------------------------
+
+``build(profile="accepted")`` (the default, and what ``main()`` selects with no
+``--profile``) is the frozen v1 composition. Its output is pinned byte-for-byte to
+``backgrounds/env_studio-softbox.png``
+(sha256 bf67d7ea04884ae229ccb42f7dc62e0f98e79ade2bc52bd9954d24d5ec1b2b4f); it is
+the accepted appearance reference for ``jobs/rl300_04_studio-white.json`` and must
+never change.
+
+``build(profile="horizon-lift")`` (batch 3e) composes a horizon-band lift on top
+of the accepted profile's **bytes** and writes
+``backgrounds/env_studio-softbox-v2.png``. The accepted map is sector-dark across
+the horizon band, so a render whose background samples that sector (az42-type)
+puts a flat dark wall plateau directly over a flat bright floor plateau, which
+the background-band gate reads as a row step. The lift raises the band's floor
+at every azimuth and neutralises the frozen negative fill where it bites,
+leaving the key/fill/overhead cores untouched. It is the lighting environment
+for ``jobs/rl300_05_studio-floor.json`` only. The visible backdrop is unchanged.
 """
 
 import argparse
@@ -31,6 +51,23 @@ import numpy as np
 from PIL import Image
 
 WIDTH, HEIGHT = 2048, 1024
+
+ROOT = Path(__file__).resolve().parents[1]
+ACCEPTED_OUTPUT = ROOT / "backgrounds/env_studio-softbox.png"
+HORIZON_LIFT_OUTPUT = ROOT / "backgrounds/env_studio-softbox-v2.png"
+
+# Profile names accepted by build() / --profile.
+PROFILE_ACCEPTED = "accepted"
+PROFILE_HORIZON_LIFT = "horizon-lift"
+
+# v2 "horizon-lift" design (batch 3e). The window is compactly supported on
+# [-20, +30] degrees elevation, flat over the core [-14, +24], smoothstep-tapered
+# on the rising side (-20 -> -14) and the falling side (+24 -> +30), and exactly
+# zero outside [-20, +30] so those rows stay byte-identical to the accepted map.
+# Order: (lo_edge, lo_core, hi_core, hi_edge).
+HORIZON_WINDOW_EL = (-20.0, -14.0, 24.0, 30.0)
+HORIZON_LIFT = 0.30          # linear, pre-encode, added inside the window
+NEGFILL_COMP_ALPHA = 0.085   # linear; neutralises the frozen negative fill in band
 
 
 def _smoothstep(edge0, edge1, x):
@@ -58,7 +95,28 @@ def _panel(azimuth, elevation, width_deg, height_deg, softness_deg=9.0):
     return fv[:, None] * fu[None, :]
 
 
-def build():
+def _encode_srgb(env):
+    """Linear scene value -> sRGB byte levels. The single encode path."""
+    env = np.clip(env, 0.0, 1.0)
+    srgb = np.where(env <= 0.0031308, env * 12.92,
+                    1.055 * np.power(env, 1 / 2.4) - 0.055)
+    return np.rint(np.clip(srgb, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def _decode_srgb(grey):
+    """sRGB byte levels -> linear scene value; inverse of _encode_srgb."""
+    s = np.asarray(grey, dtype=np.float64) / 255.0
+    return np.where(s <= 0.04045, s / 12.92, ((s + 0.055) / 1.055) ** 2.4)
+
+
+def _horizon_window(elevation):
+    """v2 elevation window: 1 over the core, 0 outside [-20, +30] degrees."""
+    lo_edge, lo_core, hi_core, hi_edge = HORIZON_WINDOW_EL
+    return _smoothstep(lo_edge, lo_core, elevation) * (
+        1.0 - _smoothstep(hi_core, hi_edge, elevation))
+
+
+def _build_accepted():
     v = (np.arange(HEIGHT) + 0.5) / HEIGHT
     elevation = (0.5 - v) * 180.0
 
@@ -84,23 +142,75 @@ def build():
 
     env = np.clip(env, 0.0, 1.0)
     # Encode straight to sRGB bytes; the renderer decodes it back on load.
-    srgb = np.where(env <= 0.0031308, env * 12.92, 1.055 * np.power(env, 1 / 2.4) - 0.055)
-    return np.rint(np.clip(srgb, 0, 1) * 255).astype(np.uint8)
+    return _encode_srgb(env)
+
+
+def _build_horizon_lift(v1_path=ACCEPTED_OUTPUT):
+    """v2 profile: the accepted bytes plus a horizon-band lift, encoded once.
+
+    The base is the accepted PNG's *bytes*, decoded with '_decode_srgb'; nothing
+    is rebuilt from generator floats and nothing is renormalised, so the rows the
+    window never reaches (elevation outside [-20, +30] degrees) keep the accepted
+    map's exact byte values.
+    """
+    v1 = np.asarray(Image.open(v1_path).convert("L"), dtype=np.uint8)
+    if v1.shape != (HEIGHT, WIDTH):
+        raise ValueError(f"base env map {v1_path} is {v1.shape}, expected {(HEIGHT, WIDTH)}")
+
+    v = (np.arange(HEIGHT) + 0.5) / HEIGHT
+    elevation = (0.5 - v) * 180.0
+    window = _horizon_window(elevation)[:, None]
+
+    # The same frozen negative-fill panel the accepted profile carves out. The
+    # compensation term can only neutralise it inside the band, never invert it.
+    negfill = _panel(azimuth=300.0, elevation=-4.0, width_deg=120.0, height_deg=90.0,
+                     softness_deg=22.0)
+
+    linear = _decode_srgb(v1)
+    composed = np.clip(
+        linear + window * (HORIZON_LIFT + NEGFILL_COMP_ALPHA * negfill), 0.0, 1.0)
+    encoded = _encode_srgb(composed)
+
+    out = v1.copy()
+    in_band = window[:, 0] > 0.0
+    out[in_band, :] = encoded[in_band, :]
+    return out
+
+
+def build(profile=PROFILE_ACCEPTED, *, v1_path=None):
+    """Return the map for 'profile' as an (HEIGHT, WIDTH) uint8 grey array."""
+    if profile == PROFILE_ACCEPTED:
+        return _build_accepted()
+    if profile == PROFILE_HORIZON_LIFT:
+        return _build_horizon_lift(ACCEPTED_OUTPUT if v1_path is None else Path(v1_path))
+    raise ValueError(f"unknown profile {profile!r}; choose one of "
+                     f"{PROFILE_ACCEPTED!r}, {PROFILE_HORIZON_LIFT!r}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--profile",
+        choices=(PROFILE_ACCEPTED, PROFILE_HORIZON_LIFT),
+        default=PROFILE_ACCEPTED,
+        help="accepted = frozen v1 map; horizon-lift = batch 3e v2 map",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "backgrounds/env_studio-softbox.png",
+        default=None,
+        help="output PNG (default: backgrounds/env_studio-softbox.png for the "
+             "accepted profile, backgrounds/env_studio-softbox-v2.png for horizon-lift)",
     )
     args = parser.parse_args()
-    grey = build()
+    output = args.output
+    if output is None:
+        output = ACCEPTED_OUTPUT if args.profile == PROFILE_ACCEPTED else HORIZON_LIFT_OUTPUT
+    grey = build(profile=args.profile)
     pixels = np.repeat(grey[..., None], 3, axis=2)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(pixels).save(args.output, compress_level=9)
-    print(f"Studio softbox environment: {args.output} ({WIDTH}x{HEIGHT}, equirectangular, "
+    output.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(pixels).save(output, compress_level=9)
+    print(f"Studio softbox environment [{args.profile}]: {output} ({WIDTH}x{HEIGHT}, equirectangular, "
           f"byte range {int(grey.min())}-{int(grey.max())})")
 
 
