@@ -892,3 +892,10 @@ accepted `pool_soft` profile — no taste override needed), measured with
 against the unchanged 1.8 pre-lens gate. Estimate before, measured seconds
 after, failures recorded — the standing convention. The full-orbit claim
 stays open until the 360-frame run exists (owner ruling, same date).
+
+**Result, 2026-09-24 (run record: `docs/cloud-smoke.md`, "T-V2 pre-flight: elevational-edge probe").**
+Dispatched as approved: 21/21 frames, all sequence gates pass, worst pre-lens
+background step **0.8603 at az267** against the unchanged 1.8 gate (az259:
+0.803); measured 512.249 s, **USD 0.15876 rate-derived** against the ~0.16
+estimate. The pre-flight is cleared; the full-orbit claim remains open until the
+360-frame run exists.
