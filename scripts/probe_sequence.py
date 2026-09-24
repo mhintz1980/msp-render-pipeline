@@ -210,6 +210,8 @@ def main():
     parser.add_argument("--lens-grain", type=float, default=2.2)
     parser.add_argument("--framerate", type=int, default=12)
     parser.add_argument("--no-encode", action="store_true")
+    parser.add_argument("--no-webm", action="store_true",
+                        help="skip the VP9/WebM companion encode (H.264 only)")
     parser.add_argument("--expect-frames", type=int, default=None,
                         help="declare the intended frame count up front; a "
                              "short download or missing frame must not pass quietly")
@@ -233,8 +235,12 @@ def main():
         raise SystemExit("NO_FRAMES: no cloud/frame-az*/beauty.png under " + str(run_dir))
 
     results, scalars, maes, digests, azimuths = [], [], [], [], []
-    pre_lens = []
     background_pre, background_lens = [], []
+    # Motion is measured while streaming: only the previous frame's RGB and
+    # mask are held, because a 360-frame orbit of pre-lens RGB images would
+    # be ~2.4 GB. The maes list stays numerically identical to the two-pass
+    # original - same frame_mae call, same order.
+    previous_rgb = previous_mask = None
     for index, beauty in enumerate(frames):
         frame_dir = beauty.parent
         azimuth = frame_azimuth(run_dir, frame_dir)
@@ -253,7 +259,9 @@ def main():
         mask = Image.open(frame_dir / "mask.png").convert("L")
         rgb = Image.open(pre_path).convert("RGB")
         scalars.append(frame_scalars(rgb, mask))
-        pre_lens.append(rgb)
+        if previous_rgb is not None:
+            maes.append(frame_mae(rgb, previous_rgb, mask, previous_mask))
+        previous_rgb, previous_mask = rgb, mask
         digests.append(sha(pre_path))
         lensed = MSPCompositor.apply_lens_pass(
             rgb, vignette=args.lens_vignette, bloom=args.lens_bloom,
@@ -264,11 +272,6 @@ def main():
             # itself consumes the pre-lens metric.
             background_pre.append(measure_background_step(rgb, mask))
             background_lens.append(measure_background_step(lensed, mask))
-
-    for i in range(1, len(pre_lens)):
-        maes.append(frame_mae(pre_lens[i], pre_lens[i - 1],
-                              Image.open(frames[i].parent / "mask.png").convert("L"),
-                              Image.open(frames[i - 1].parent / "mask.png").convert("L")))
 
     # Grain determinism, proven adversarially on the middle frame: a rerun
     # must reproduce the delivered bytes exactly.
@@ -352,6 +355,45 @@ def main():
         report["decode_floor_db"] = PSNR_FLOOR_DB
         if min(decode) < PSNR_FLOOR_DB:
             report["problems"].append(f"DECODE_BELOW_FLOOR: {min(decode):.2f} dB")
+
+        # VP9/WebM companion encode (video brief section 9, item 4): same
+        # source frames, same gates as the MP4 above, one pass with no
+        # -stream_loop (owner ruling: looping is the player's job).
+        if not args.no_webm:
+            webm = run_dir / "turntable-loop.webm"
+            encode_webm = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-framerate", str(args.framerate), "-i", str(concat / "f%03d.png"),
+                 "-c:v", "libvpx-vp9", "-crf", "24", "-b:v", "0",
+                 "-pix_fmt", "yuv420p", "-row-mt", "1", str(webm)],
+                capture_output=True, text=True)
+            if encode_webm.returncode:
+                print(json.dumps({"status": "failed", "reason": "FFMPEG_WEBM",
+                                  "stderr": encode_webm.stderr[-500:]}))
+                return 1
+            try:
+                webm_encoded = encoded_frame_count(webm)
+            except (RuntimeError, OSError) as exc:
+                webm_encoded = None
+                report["webm_encoded_frame_count"] = None
+                report["problems"].append(f"WEBM_ENCODED_FRAME_COUNT_UNAVAILABLE: {exc}")
+            else:
+                report["webm_encoded_frame_count"] = webm_encoded
+            if webm_encoded is not None and webm_encoded != len(frames):
+                report["problems"].append(
+                    f"WEBM_ENCODED_FRAME_COUNT_MISMATCH: encoded {webm_encoded} "
+                    f"vs unique {len(frames)}")
+            webm_decode = []
+            for index in (0, len(frames) // 2, len(frames) - 1):
+                out = run_dir / f"decode-webm-f{index:03d}.png"
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(webm),
+                                "-vf", f"select=eq(n\\,{index})", "-vsync", "0",
+                                str(out)], capture_output=True, check=True)
+                webm_decode.append(psnr(Image.open(out).convert("RGB"),
+                                        Image.open(concat / f"f{index:03d}.png").convert("RGB")))
+            report["webm_decode_psnr_db"] = [round(p, 2) for p in webm_decode]
+            if min(webm_decode) < PSNR_FLOOR_DB:
+                report["problems"].append(f"WEBM_DECODE_BELOW_FLOOR: {min(webm_decode):.2f} dB")
 
     save = {"status": "passed" if not report["problems"] else "failed", **report}
     (run_dir / "sequence-report.json").write_text(
