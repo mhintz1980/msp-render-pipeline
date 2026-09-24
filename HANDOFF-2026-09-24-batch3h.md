@@ -2,9 +2,13 @@
 
 Worktree: `C:/Projects/msp-render-pipeline-scene-prep`; branch
 `codex/studiomark-scene-prep`. The round commit is **`e835c7f`** ("Batch 3h:
-opt-in lighting.rim_profile …"); the branch is **10 local commits ahead of its
+opt-in lighting.rim_profile …"); the branch was **10 local commits ahead of its
 `origin/codex/studiomark-scene-prep` upstream** after it, and **the push waits
-for Mark's words**. This supersedes `HANDOFF-2026-09-23-batch3g.md`.
+for Mark's words**. Commits follow it: `737e2c2` corrects the round's public
+record (the cross-family record review's findings) and this handoff is committed
+as its own commit after its own review — take the live branch state from
+`git log --oneline`, never from this count. This supersedes
+`HANDOFF-2026-09-23-batch3g.md`.
 
 Suite evidence, exactly as architect-run on the project venv:
 `Ran 103 tests ... OK` for `./.venv/Scripts/python.exe -m unittest discover -s tests -p test_floor_mode.py`,
