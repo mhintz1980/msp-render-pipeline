@@ -129,6 +129,50 @@ class OverrideTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cloud.apply_overrides(manifest, [bad])
 
+    def test_boolean_control_overrides_reject_every_non_boolean_value(self):
+        # 3g review F1 (widened per the 3i DeepSeek review's finding 2): the
+        # worker reads these controls truthy, so "FALSE" keeps one on and
+        # 0/null silently disables it; every non-boolean dies at override
+        # time, before a billable call. analytic_lights/shadow_catcher are
+        # not creatable-optional, so the fixture carries them present.
+        good = {"key_enabled": True, "fill_enabled": True, "rim_enabled": True,
+                "analytic_lights": True, "shadow_catcher": True,
+                "floor": {"enabled": True}}
+        for path in sorted(cloud.BOOLEAN_OVERRIDE_PATHS):
+            for raw in ("FALSE", "True", "0", "1", "null"):
+                with self.subTest(override=f"{path}={raw}"):
+                    manifest = {"lighting": json.loads(json.dumps(good))}
+                    with self.assertRaisesRegex(ValueError, "BAD_OVERRIDE_VALUE"):
+                        cloud.apply_overrides(manifest, [f"{path}={raw}"])
+                    self.assertEqual(manifest, {"lighting": good})
+
+    def test_boolean_control_overrides_accept_exact_json_booleans(self):
+        manifest = {"lighting": {"analytic_lights": True,
+                                 "shadow_catcher": False,
+                                 "floor": {"enabled": True}}}
+        cloud.apply_overrides(manifest, ["lighting.key_enabled=false",
+                                         "lighting.fill_enabled=true",
+                                         "lighting.rim_enabled=false",
+                                         "lighting.analytic_lights=false",
+                                         "lighting.shadow_catcher=true",
+                                         "lighting.floor.enabled=false"])
+        self.assertEqual(manifest["lighting"],
+                         {"key_enabled": False, "fill_enabled": True,
+                          "rim_enabled": False, "analytic_lights": False,
+                          "shadow_catcher": True,
+                          "floor": {"enabled": False}})
+
+    def test_boolean_control_guard_leaves_other_paths_parsing_as_before(self):
+        # Non-optional paths keep the JSON-when-possible, string-otherwise
+        # parse: numbers, booleans and path strings all still land (F1 must
+        # not narrow the general override grammar).
+        manifest = {"camera": {"depth_of_field": {"f_stop": 11.0}},
+                    "require_gpu": True}
+        cloud.apply_overrides(manifest, ["camera.depth_of_field.f_stop=3.2",
+                                         "require_gpu=false"])
+        self.assertEqual(manifest["camera"]["depth_of_field"]["f_stop"], 3.2)
+        self.assertIs(manifest["require_gpu"], False)
+
     def test_overrides_reach_the_frame_manifests(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -14,9 +14,12 @@ review". They are asserted so they cannot drift silently.
 
 import hashlib
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -25,10 +28,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts import build_studio_softbox_env as softbox  # noqa: E402
 from scripts.build_studio_softbox_env import (  # noqa: E402
     ACCEPTED_OUTPUT, HEIGHT, HORIZON_LIFT, HORIZON_LIFT_OUTPUT, NEGFILL_COMP_ALPHA,
     PROFILE_ACCEPTED, PROFILE_HORIZON_LIFT, WIDTH, _decode_srgb, _encode_srgb,
-    _horizon_window, _panel, build,
+    _horizon_window, _panel, build, guard_accepted_output,
 )
 
 # Accepted v1 map, the pinned anchor of DRAFT-2 constraint 1.
@@ -184,6 +188,83 @@ class TestStudioSoftboxEnv(unittest.TestCase):
                          "backgrounds/env_studio-softbox-v2.png")
         self.assertEqual(white_manifest["lighting"]["hdri_path"],
                          "backgrounds/env_studio-softbox.png")
+
+
+class AcceptedOutputGuardTests(unittest.TestCase):
+    """3e GLM finding 7: the accepted asset must never change on disk."""
+
+    def test_guard_passes_the_reproducing_write_on_the_tracked_asset(self):
+        # The tracked file hashes to the pin and the accepted profile
+        # reproduces its bytes, so the exact write main() would make is
+        # allowed through. This is also the encode-determinism tripwire: if
+        # _png_bytes ever diverged from what save() wrote, leg 2 refuses.
+        guard_accepted_output(ACCEPTED_OUTPUT, build(profile=PROFILE_ACCEPTED))
+
+    def test_guard_refuses_when_the_existing_asset_has_diverged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "env_studio-softbox.png"
+            target.write_bytes(b"not the accepted map")
+            with mock.patch.object(softbox, "ACCEPTED_OUTPUT", target):
+                with self.assertRaisesRegex(SystemExit, "no longer matches"):
+                    softbox.guard_accepted_output(
+                        target, build(profile=PROFILE_ACCEPTED))
+
+    def test_guard_refuses_bytes_that_would_change_the_asset(self):
+        # No existing file (fresh-checkout shape) and the wrong profile aimed
+        # at the accepted path: the write itself is refused. v1_path pins the
+        # horizon-lift base to the real accepted map; the patch below only
+        # moves the guard's ACCEPTED_OUTPUT.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "env_studio-softbox.png"
+            with mock.patch.object(softbox, "ACCEPTED_OUTPUT", target):
+                with self.assertRaisesRegex(SystemExit,
+                                            "would change its bytes"):
+                    softbox.guard_accepted_output(
+                        target,
+                        build(profile=PROFILE_HORIZON_LIFT, v1_path=ACCEPTED_OUTPUT))
+
+    def test_guard_passes_writes_to_any_other_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = Path(tmp) / "env_studio-softbox-v2.png"
+            with mock.patch.object(softbox, "ACCEPTED_OUTPUT",
+                                   Path(tmp) / "elsewhere.png"):
+                softbox.guard_accepted_output(
+                    other,
+                    build(profile=PROFILE_HORIZON_LIFT, v1_path=ACCEPTED_OUTPUT))
+
+    def test_guard_treats_a_hard_link_to_the_asset_as_the_asset(self):
+        # Review finding 1: a resolved-path string comparison lets a hard
+        # link through (resolves unequal, samefile True) and main() would
+        # write through the link into the accepted inode.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "env_studio-softbox.png"
+            target.write_bytes(b"not the accepted map")
+            alias = Path(tmp) / "alias.png"
+            try:
+                os.link(target, alias)
+            except OSError:
+                raise unittest.SkipTest("hard links unavailable on this fs")
+            with mock.patch.object(softbox, "ACCEPTED_OUTPUT", target):
+                with self.assertRaisesRegex(SystemExit, "no longer matches"):
+                    softbox.guard_accepted_output(
+                        alias, build(profile=PROFILE_ACCEPTED))
+
+    @unittest.skipUnless(os.name == "nt", "case-insensitive lookup is Windows")
+    def test_guard_matches_a_case_variant_output_while_the_asset_is_absent(self):
+        # Review finding 1, second leg: with the asset absent, resolve()
+        # keeps the typed case, so a case-variant --output would slip the
+        # guard and Windows would create the accepted path with the wrong
+        # profile's bytes. normcase closes it.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "env_studio-softbox.png"
+            variant = Path(tmp) / "ENV_STUDIO-Softbox.png"
+            with mock.patch.object(softbox, "ACCEPTED_OUTPUT", target):
+                with self.assertRaisesRegex(SystemExit,
+                                            "would change its bytes"):
+                    softbox.guard_accepted_output(
+                        variant,
+                        build(profile=PROFILE_HORIZON_LIFT,
+                              v1_path=ACCEPTED_OUTPUT))
 
 
 if __name__ == "__main__":

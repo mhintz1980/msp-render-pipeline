@@ -44,7 +44,10 @@ for ``jobs/rl300_05_studio-floor.json`` only. The visible backdrop is unchanged.
 """
 
 import argparse
+import hashlib
+import io
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +58,11 @@ WIDTH, HEIGHT = 2048, 1024
 ROOT = Path(__file__).resolve().parents[1]
 ACCEPTED_OUTPUT = ROOT / "backgrounds/env_studio-softbox.png"
 HORIZON_LIFT_OUTPUT = ROOT / "backgrounds/env_studio-softbox-v2.png"
+
+# The frozen v1 composition this file's docstring pins byte-for-byte (also
+# asserted in tests/test_studio_softbox_env.py). Writing ACCEPTED_OUTPUT is
+# refused unless the write reproduces these exact bytes (3e GLM finding 7).
+ACCEPTED_SHA256 = "bf67d7ea04884ae229ccb42f7dc62e0f98e79ade2bc52bd9954d24d5ec1b2b4f"
 
 # Profile names accepted by build() / --profile.
 PROFILE_ACCEPTED = "accepted"
@@ -187,6 +195,61 @@ def build(profile=PROFILE_ACCEPTED, *, v1_path=None):
                      f"{PROFILE_ACCEPTED!r}, {PROFILE_HORIZON_LIFT!r}")
 
 
+def _png_bytes(grey):
+    """The exact bytes main() would write for 'grey' (same save parameters)."""
+    pixels = np.repeat(np.asarray(grey)[..., None], 3, axis=2)
+    buffer = io.BytesIO()
+    Image.fromarray(pixels).save(buffer, format="PNG", compress_level=9)
+    return buffer.getvalue()
+
+
+def _targets_accepted_output(output) -> bool:
+    """True when 'output' names the accepted asset - directly, case-variant,
+    or through a link.
+
+    Review finding 1: a resolved-path string comparison misses a hard link
+    (resolves unequal, samefile True) and a case-variant spelling while the
+    asset is absent (Windows would then create the accepted path with
+    another profile's bytes). Compare files when both exist, else compare
+    normcased realpaths.
+    """
+    if (os.path.normcase(str(Path(output).resolve()))
+            == os.path.normcase(str(ACCEPTED_OUTPUT.resolve()))):
+        return True
+    try:
+        return os.path.samefile(output, ACCEPTED_OUTPUT)
+    except OSError:
+        return False
+
+
+def guard_accepted_output(output, grey) -> None:
+    """Refuse any write to ACCEPTED_OUTPUT that would not reproduce it.
+
+    Two refusals, both before the file is touched: an existing file that no
+    longer hashes to ACCEPTED_SHA256 means the accepted asset has diverged
+    and regenerating would silently destroy that state; bytes about to be
+    written that do not hash to ACCEPTED_SHA256 mean the generator - or a
+    --output aimed here with another profile - no longer reproduces the
+    frozen composition. Writes anywhere else pass through untouched.
+    """
+    if not _targets_accepted_output(output):
+        return
+    if ACCEPTED_OUTPUT.is_file():
+        existing = hashlib.sha256(ACCEPTED_OUTPUT.read_bytes()).hexdigest()
+        if existing != ACCEPTED_SHA256:
+            raise SystemExit(
+                f"REFUSED: {ACCEPTED_OUTPUT} no longer matches the pinned "
+                f"accepted sha256 {ACCEPTED_SHA256} (found {existing}); "
+                "regenerating would overwrite a modified accepted asset - "
+                "resolve manually")
+    new_sha = hashlib.sha256(_png_bytes(grey)).hexdigest()
+    if new_sha != ACCEPTED_SHA256:
+        raise SystemExit(
+            f"REFUSED: writing to {ACCEPTED_OUTPUT} would change its bytes "
+            f"(pinned sha256 {ACCEPTED_SHA256}, this build hashes to "
+            f"{new_sha}); the accepted asset must never change")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -207,6 +270,7 @@ def main():
     if output is None:
         output = ACCEPTED_OUTPUT if args.profile == PROFILE_ACCEPTED else HORIZON_LIFT_OUTPUT
     grey = build(profile=args.profile)
+    guard_accepted_output(output, grey)
     pixels = np.repeat(grey[..., None], 3, axis=2)
     output.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(pixels).save(output, compress_level=9)

@@ -120,6 +120,27 @@ SCHEMA_OPTIONAL_OVERRIDE_PATHS = frozenset({
     "lighting.rim_profile",
 })
 
+# Every schema-declared boolean lighting control (re-review finding 1:
+# five top-level keys plus the nested lighting.floor.enabled) takes an exact
+# JSON boolean in --set (3g review F1, widened per the 3i DeepSeek reviews'
+# findings). The worker reads the top-level five truthy
+# (render_worker.setup_lighting, the shadow-catcher branch) and floor mode
+# strictly (`floor_mode` reads `is True`), so a string "FALSE"/"TRUE" or a
+# JSON 0/null silently runs the opposite of what the author meant - it must
+# fail before a billable call instead. Only the *_enabled three are also
+# CREATABLE when absent; analytic_lights/shadow_catcher/floor.enabled are
+# ordinary schema keys. rim_profile is NOT here: its value contract (a known
+# profile-name string) is fully owned by validate_rim_profile whatever route
+# the value took, so a typed guard would only relabel its existing errors.
+BOOLEAN_OVERRIDE_PATHS = frozenset({
+    "lighting.key_enabled",
+    "lighting.fill_enabled",
+    "lighting.rim_enabled",
+    "lighting.analytic_lights",
+    "lighting.shadow_catcher",
+    "lighting.floor.enabled",
+})
+
 
 def apply_overrides(manifest, overrides):
     """Apply dotted-path=value overrides in place; unknown paths are errors.
@@ -128,7 +149,9 @@ def apply_overrides(manifest, overrides):
     otherwise (paths). A typo'd path must fail before a billable call, not
     silently render the unmodified job. Only paths listed in
     SCHEMA_OPTIONAL_OVERRIDE_PATHS may be created when absent; no default is
-    ever injected without an explicit override.
+    ever injected without an explicit override. A BOOLEAN_OVERRIDE_PATHS value
+    that is not an exact JSON boolean is a hard error: the worker reads
+    *_enabled truthy, so "FALSE"/0/null would silently flip a light.
     """
     for override in overrides or []:
         path, sep, raw = override.partition("=")
@@ -152,6 +175,9 @@ def apply_overrides(manifest, overrides):
             value = json.loads(raw)
         except json.JSONDecodeError:
             value = raw
+        if path in BOOLEAN_OVERRIDE_PATHS and not isinstance(value, bool):
+            raise ValueError(
+                f"BAD_OVERRIDE_VALUE: {override} (must be a JSON boolean)")
         node[keys[-1]] = value
     return manifest
 
@@ -183,6 +209,34 @@ def validate_rim_profile(manifest) -> None:
         f"(valid: {sorted(RIM_PROFILES)})")
 
 
+def validate_lighting_booleans(manifest) -> None:
+    """A boolean lighting control that is not exactly a JSON boolean must
+    fail before a billable call (3g review F1's dispatch-path assertion).
+
+    The worker reads these controls as truthy values (render_worker's light
+    rig and shadow-catcher branch) or strictly (floor_mode reads `is True`),
+    so a manifest carrying "false"/"TRUE" runs the opposite of what the
+    author meant. apply_overrides types the --set route; this walks each
+    BOOLEAN_OVERRIDE_PATHS in the manifest (one list, dotted paths, nesting
+    included) and catches values the file itself carries. An ABSENT key is
+    inert and injects nothing.
+    """
+    lighting = manifest.get("lighting")
+    if not isinstance(lighting, dict):
+        return
+    for path in sorted(BOOLEAN_OVERRIDE_PATHS):
+        keys = path.split(".")[1:]  # every entry starts with "lighting."
+        node = lighting
+        for key in keys[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(node, dict) or keys[-1] not in node:
+            continue
+        if not isinstance(node[keys[-1]], bool):
+            raise ValueError(
+                f"INVALID_LIGHTING_BOOLEAN: {path}={node[keys[-1]]!r} "
+                f"(JSON true/false only)")
+
+
 def frame_plan(manifest_path, azimuths, overrides=None):
     """Everything the dispatch needs: frames, container inputs, local inputs.
 
@@ -204,6 +258,8 @@ def frame_plan(manifest_path, azimuths, overrides=None):
     # A rim_profile the worker would reject must die here, before any mount or
     # file check and before --execute: no billable call for a typo.
     validate_rim_profile(manifest)
+    # Same rule for the boolean light controls, whatever route the value took.
+    validate_lighting_booleans(manifest)
     hdri = manifest.get("lighting", {}).get("hdri_path")
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")

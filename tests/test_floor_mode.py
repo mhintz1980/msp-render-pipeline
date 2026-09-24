@@ -513,6 +513,112 @@ class DispatcherFloorPreflightTests(unittest.TestCase):
                 cloud.frame_plan(
                     path, [42.0], ["lighting.key_enabled_typo=false"])
 
+    def test_only_the_schema_declared_optional_paths_are_creatable(self):
+        # F2 (3g review): the rejection test above cannot fail for the reason
+        # its neighbourhood claims - HEAD rejects typo'd paths too. Pin the
+        # allowlist positively: exactly these four paths are creatable when
+        # absent, and a schema-declared path outside the set still is not.
+        cloud = self._cloud()
+        self.assertEqual(
+            set(cloud.SCHEMA_OPTIONAL_OVERRIDE_PATHS),
+            {"lighting.key_enabled", "lighting.fill_enabled",
+             "lighting.rim_enabled", "lighting.rim_profile"})
+        self.assertEqual(
+            set(cloud.BOOLEAN_OVERRIDE_PATHS),
+            {"lighting.key_enabled", "lighting.fill_enabled",
+             "lighting.rim_enabled", "lighting.analytic_lights",
+             "lighting.shadow_catcher", "lighting.floor.enabled"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            for override, expected in (
+                    ("lighting.key_enabled=false", False),
+                    ("lighting.fill_enabled=false", False),
+                    ("lighting.rim_enabled=false", False),
+                    ("lighting.rim_profile=pool_soft", "pool_soft")):
+                with self.subTest(override=override):
+                    plan = cloud.frame_plan(path, [42.0], [override])
+                    key = override.split(".", 1)[1].split("=")[0]
+                    self.assertEqual(
+                        [f["lighting"][key] for f in plan["frames"]],
+                        [expected])
+            # Schema-declared (docs/job_manifest.schema.json) but not an
+            # optional-override path: still non-creatable when absent.
+            with self.assertRaisesRegex(ValueError, "UNKNOWN_OVERRIDE_PATH"):
+                cloud.frame_plan(
+                    path, [42.0], ["lighting.color_temperature_k=5600"])
+
+    def test_absent_schema_optional_controls_are_never_injected(self):
+        # F3 (3g review): the named absence guard covered key_enabled only
+        # (rim_profile had its own). Pin every control the same way: omitted
+        # in the source means omitted in every frame manifest.
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            plan = cloud.frame_plan(path, [42.0, 222.0])
+            for key in ("key_enabled", "fill_enabled", "rim_enabled",
+                        "rim_profile"):
+                with self.subTest(key=key):
+                    for frame in plan["frames"]:
+                        self.assertNotIn(key, frame["lighting"])
+
+    def test_non_boolean_set_override_fails_at_plan_time(self):
+        # F1's --set leg, through the full plan: the worker reads *_enabled
+        # truthy, so the string "FALSE" would keep the Rim ON when the
+        # operator asked for off. analytic_lights and floor.enabled need the
+        # key present (they are not creatable-optional); floor mode reads
+        # `is True`, so "TRUE" would silently disable the floor.
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "BAD_OVERRIDE_VALUE"):
+                cloud.frame_plan(path, [42.0],
+                                 ["lighting.rim_enabled=FALSE"])
+            path = self._fixture(
+                tmp, lighting={"preset": "studio_white",
+                               "analytic_lights": True},
+                output_extra={"film_transparent": True})
+            with self.assertRaisesRegex(ValueError, "BAD_OVERRIDE_VALUE"):
+                cloud.frame_plan(path, [42.0],
+                                 ["lighting.analytic_lights=FALSE"])
+            path = self._fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "BAD_OVERRIDE_VALUE"):
+                cloud.frame_plan(path, [42.0],
+                                 ["lighting.floor.enabled=TRUE"])
+
+    def test_literal_non_boolean_lighting_flag_fails_before_dispatch(self):
+        # F1's dispatch-path leg: apply_overrides types the --set route, this
+        # catches a value the manifest file itself carries. "false" would run
+        # the light ON, 0/null would silently remove it. The floor case pairs
+        # with film_transparent so the floor-config check passes it through
+        # to the boolean validation.
+        cloud = self._cloud()
+        for key, bad, transparent in (
+                ("key_enabled", "false", True),
+                ("fill_enabled", 0, True),
+                ("rim_enabled", None, True),
+                ("analytic_lights", "0", True),
+                ("shadow_catcher", "false", True),
+                ("floor", {"enabled": "false"}, True)):
+            with self.subTest(lighting={key: bad}):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._fixture(
+                        tmp, lighting={"preset": "studio_white", key: bad},
+                        output_extra={"film_transparent": transparent})
+                    with self.assertRaisesRegex(ValueError,
+                                                "INVALID_LIGHTING_BOOLEAN"):
+                        cloud.frame_plan(path, [42.0])
+
+    def test_literal_boolean_lighting_flags_pass_the_dispatch_check(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(
+                tmp, lighting={"preset": "studio_white",
+                               "key_enabled": True, "fill_enabled": False},
+                output_extra={"film_transparent": True})
+            plan = cloud.frame_plan(path, [42.0])
+            self.assertEqual(plan["frames"][0]["lighting"]["fill_enabled"],
+                             False)
+
     def test_floor_with_transparent_film_fails_before_dispatch(self):
         cloud = self._cloud()
         with tempfile.TemporaryDirectory() as tmp:
