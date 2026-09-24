@@ -98,8 +98,9 @@ class TestStudioSoftboxEnv(unittest.TestCase):
         HALF v1's (0.4846 narrow, 0.5684 extended). The pinned window's upper
         edge was moved to +30 for band coverage, and the measured ratios are
         0.52941 (narrow) and 0.67593 (extended): the half target is NOT met.
-        The measured values are recorded here, with the shortfall flagged for
-        the architect's correction (see the derivation revision).
+        The measured values are recorded here as history; the <= 0.5 target
+        was RETIRED as a formal bar by owner ruling 2026-09-24
+        (docs/rl300-parity.md, "the five carried items").
         """
         v1 = build(profile=PROFILE_ACCEPTED)
         v2 = build(profile=PROFILE_HORIZON_LIFT)
@@ -155,8 +156,10 @@ class TestStudioSoftboxEnv(unittest.TestCase):
           pre-clip max 1.2999732176452983 (v1 pre-clip 1.0744)
           added lift term max 0.385
           band pixels the lift newly pushes over 1.0: 13541
-        These are pinned with an explicit comment flagging owner sign-off; they
-        are NOT a claim that the 0.96 headroom was met.
+        These are pinned with the owner ACCEPTANCE recorded: the clipped-band
+        state was accepted 2026-09-24 as part of the approved pool_soft look
+        (docs/rl300-parity.md, "the five carried items"). They are still NOT
+        a claim that the 0.96 headroom was met.
         """
         v1 = build(profile=PROFILE_ACCEPTED)
         v2 = build(profile=PROFILE_HORIZON_LIFT)

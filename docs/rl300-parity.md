@@ -1188,3 +1188,47 @@ by omitting the key.
 
 The same message authorized **pushing the branch** (15 commits were waiting);
 the push to `origin/codex/studiomark-scene-prep` executed the same day.
+
+## 2026-09-24 — owner rulings: the five carried items
+
+Asked for decisions on the five items the 3j recommendations put to him, Mark
+replied in session, verbatim:
+
+> *"1. skip it"*
+>
+> *"2. Accept it"*
+>
+> *"3. Retire it"*
+>
+> *"4. i approve your recommendation"*
+>
+> *"5. stays open until 360 run"*
+
+**Standing records, one per item:**
+
+1. **Rim-only attribution run — SKIPPED, never dispatched (owner choice).**
+   The attribution wording stays exactly as measured: the ramp depends on the
+   Rim given the other lights and the v2 env; a Rim-only rig was never
+   rendered, so "the Rim is the sole origin" stays unmeasured — now
+   deliberately, not for lack of a ~USD 0.08 estimate.
+2. **v2 env LDR headroom — ACCEPTED as part of the approved look.** The
+   clipped-band state (pre-clip in-band max 1.2999732176452983; 13,541 band
+   pixels newly clipped; composed max 1.0) is owner-accepted together with
+   `pool_soft`. The numbers stay pinned in
+   `tests/test_studio_softbox_env.py::test_constraint_11_headroom_is_recorded`
+   (its pending-sign-off note updated); it remains no claim that the 0.96
+   headroom of the old draft constraint was ever met.
+3. **Half-azimuth-step bar — RETIRED as a formal bar.** The amended spec's
+   ≤0.5 worst-step ratio target (measured 0.52941 narrow / 0.67593 extended,
+   improvement strict) no longer gates anything; the binding metric is the
+   orbit gate (pre-lens ≤ 1.8), which the accepted look clears 30/30. The
+   measured ratios stay recorded as history in
+   `tests/test_studio_softbox_env.py::test_horizon_lift_differs_and_holds_band_invariants`.
+4. **Elevational-edge probe — APPROVED as the T-V2 pre-flight head.**
+   Azimuths 250–270 at 1° (21 frames), ~USD 0.16 rate-derived estimate,
+   dispatched before the ~USD 1.30 full-orbit spend, from the job of record
+   (accepted `pool_soft`), measured against the unchanged 1.8 gate. Scope
+   recorded in `docs/video-pipeline-brief.md` §13.5. Estimate before,
+   measured seconds after — the standing convention applies when it runs.
+5. **Full-orbit claim — OPEN until a 360-frame run exists.** No orbit-wide
+   statement is claimable from the 30-azimuth grid.

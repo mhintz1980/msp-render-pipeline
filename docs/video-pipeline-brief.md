@@ -873,3 +873,22 @@ are incomparable by definition — batch-2 masks include the catcher contact
 shadow, floor-mode masks are product-only (see
 `output/batch3b-evidence-review-deepseek.txt`). Run record and next actions:
 `HANDOFF-2026-09-21-batch3b.md`.
+
+### 13.5 Owner-approved T-V2 pre-flight: the elevational-edge probe, 2026-09-24
+
+The v2 environment (`env_studio-softbox-v2.png`) carries an elevational edge
+at azimuth ~259 / elevation ~28.4° — worst smoothed gradient 18.96 → 33.19
+byte/deg (batch 3e/3g measurements). The batch 3h 30-azimuth orbit sampled at
+12° steps, so it **cannot exclude a defect narrower than ~12°**, and a 1°
+production orbit **will** sample azimuth ~259. Mark approved the
+recommendation verbatim (*"4. i approve your recommendation"*, 2026-09-24):
+
+**Before the ~USD 1.30 full-orbit cloud spend, T-V2 dispatches a probe at
+azimuths 250–270 at 1° (21 frames), estimated ~USD 0.16 rate-derived**
+(21 × ~12.97 s warm + 229 s cold at 0.00030992 USD/s), rendered from the
+job of record (`jobs/rl300_05_studio-floor.json`, which now carries the
+accepted `pool_soft` profile — no taste override needed), measured with
+`scripts/probe_sequence.py --run-dir <dir> --expect-frames 21 --no-encode`
+against the unchanged 1.8 pre-lens gate. Estimate before, measured seconds
+after, failures recorded — the standing convention. The full-orbit claim
+stays open until the 360-frame run exists (owner ruling, same date).
