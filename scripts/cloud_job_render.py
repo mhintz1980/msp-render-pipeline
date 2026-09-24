@@ -117,6 +117,7 @@ SCHEMA_OPTIONAL_OVERRIDE_PATHS = frozenset({
     "lighting.key_enabled",
     "lighting.fill_enabled",
     "lighting.rim_enabled",
+    "lighting.rim_profile",
 })
 
 
@@ -155,6 +156,33 @@ def apply_overrides(manifest, overrides):
     return manifest
 
 
+def validate_rim_profile(manifest) -> None:
+    """A rim_profile the worker would reject must fail before a billable call.
+
+    An ABSENT key is inert and creates no key: the default is the worker's,
+    not the dispatcher's. A PRESENT key is validated whatever its value. An
+    explicit null is NOT inert: the worker reads a present null as a non-string
+    and raises after the billable call, so it must be rejected here. Anything
+    that is not a known profile name - null, a typo'd string, a number, a
+    boolean, a list, an empty string - is a hard error naming the value rep and
+    the valid names. RIM_PROFILES is imported lazily so importing this
+    dispatcher never pulls render_worker (same pattern as the lazy
+    composite_worker import inside frame_plan).
+    """
+    lighting = manifest.get("lighting")
+    if not isinstance(lighting, dict):
+        return
+    if "rim_profile" not in lighting:
+        return
+    profile = lighting["rim_profile"]
+    from render_worker import RIM_PROFILES
+    if isinstance(profile, str) and profile in RIM_PROFILES:
+        return
+    raise ValueError(
+        f"INVALID_RIM_PROFILE: {profile!r} "
+        f"(valid: {sorted(RIM_PROFILES)})")
+
+
 def frame_plan(manifest_path, azimuths, overrides=None):
     """Everything the dispatch needs: frames, container inputs, local inputs.
 
@@ -173,6 +201,9 @@ def frame_plan(manifest_path, azimuths, overrides=None):
     errors = validate_floor_config(manifest)
     if errors:
         raise ValueError("INVALID_FLOOR_CONFIG: " + "; ".join(errors))
+    # A rim_profile the worker would reject must die here, before any mount or
+    # file check and before --execute: no billable call for a typo.
+    validate_rim_profile(manifest)
     hdri = manifest.get("lighting", {}).get("hdri_path")
     plate = manifest.get("compositing", {}).get("background_plate")
     frames = [frame_manifest(manifest, azimuth, f"/output/{FRAME_PREFIX}{frame_name(azimuth)}")

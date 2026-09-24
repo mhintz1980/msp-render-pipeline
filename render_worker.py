@@ -315,6 +315,37 @@ def mute_catcher_bounce(catcher_obj):
                 pass
 
 
+# Batch 3h: a versioned Rim-rig selector for the studio_dark/studio_white
+# analytic branch only. A profile value of None means the attribute is never
+# written, which is what keeps the shipped rig byte-identical. pool_soft
+# spreads the same light, in the same place at the same power, by writing
+# spot_blend (cone falloff) and shadow_soft_size (emitter radius). See
+# docs/job_manifest.schema.json lighting.rim_profile.
+RIM_PROFILES = {
+    "pool_v1": {"spot_blend": None, "shadow_soft_size_factor": None},
+    "pool_soft": {"spot_blend": 0.35, "shadow_soft_size_factor": 0.35},
+}
+
+
+def apply_rim_profile(light_data, profile, radius) -> None:
+    """Write the named profile onto a SPOT light's data block.
+
+    pool_v1 writes nothing at all, so the shipped rig is preserved exactly.
+    An unknown profile name is a hard error, never a silent fallback to
+    pool_v1: a typo must not render the old rig while wearing a new name.
+    Never write a value that is None.
+    """
+    if not isinstance(profile, str) or profile not in RIM_PROFILES:
+        raise ValueError(
+            f"UNKNOWN_RIM_PROFILE: {profile!r} "
+            f"(valid: {sorted(RIM_PROFILES)})")
+    spec = RIM_PROFILES[profile]
+    if spec["spot_blend"] is not None:
+        light_data.spot_blend = spec["spot_blend"]
+    if spec["shadow_soft_size_factor"] is not None:
+        light_data.shadow_soft_size = spec["shadow_soft_size_factor"] * radius
+
+
 def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float,
                    suppress_shadow_catcher: bool = False):
     """Sets up calibrated studio softbox lights or physical outdoor sun/sky environment."""
@@ -329,6 +360,17 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float,
             f"lighting.hdri_path does not exist: {hdri_path}\n"
             f"  (cwd={os.getcwd()}) - use an absolute path or a path relative to "
             f"the project root.")
+
+    # Batch 3h: resolve and validate the Rim-rig profile here, unconditionally
+    # and before any scene mutation, so the dispatcher and the worker apply one
+    # rule in every preset: an unknown or non-string value fails loudly before
+    # any light exists. A *valid* profile stays inert outside the studio branch
+    # (only that branch consumes it); pool_v1 writes nothing.
+    rim_profile = lighting_spec.get("rim_profile", "pool_v1")
+    if not isinstance(rim_profile, str) or rim_profile not in RIM_PROFILES:
+        raise ValueError(
+            f"UNKNOWN_RIM_PROFILE: {rim_profile!r} "
+            f"(valid: {sorted(RIM_PROFILES)})")
 
     # Remove existing lights if replacing with fresh rig
     if preset != "preserve_existing":
@@ -465,6 +507,7 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float,
             rim_data.energy = 600.0 * intensity * (radius ** 1.5)
             rim_data.spot_size = math.radians(60)
             rim_data.color = (1.0, 1.0, 1.0)
+            apply_rim_profile(rim_data, rim_profile, radius)
             rim_obj = bpy.data.objects.new("Rim_Light", rim_data)
             rim_obj.location = (0, radius * 2.8, radius * 3.2)
             bpy.context.scene.collection.objects.link(rim_obj)

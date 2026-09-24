@@ -445,7 +445,67 @@ class DispatcherFloorPreflightTests(unittest.TestCase):
                               for f in plan["frames"]], [False, False])
             self.assertEqual(path.read_bytes(), source_before)
 
-    def test_key_enabled_stays_the_only_creatable_override_path(self):
+    def _studio_fixture(self, root):
+        return self._fixture(root, lighting={"preset": "studio_white"},
+                             output_extra={"film_transparent": True})
+
+    def test_rim_profile_override_reaches_frames_without_touching_source(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            source_before = path.read_bytes()
+            plan = cloud.frame_plan(
+                path, [42.0, 222.0], ["lighting.rim_profile=pool_soft"])
+            self.assertEqual([f["lighting"]["rim_profile"]
+                              for f in plan["frames"]], ["pool_soft"] * 2)
+            self.assertEqual(path.read_bytes(), source_before)
+
+    def test_typo_rim_profile_fails_before_dispatch(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "INVALID_RIM_PROFILE"):
+                cloud.frame_plan(path, [42.0],
+                                 ["lighting.rim_profile=pool_softt"])
+
+    def test_numeric_rim_profile_fails_before_dispatch(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "INVALID_RIM_PROFILE"):
+                cloud.frame_plan(path, [42.0], ["lighting.rim_profile=5"])
+
+    def test_null_rim_profile_override_fails_before_dispatch(self):
+        # Review B1: an explicit --set null is a non-string. It must die at
+        # plan time, never be written into a frame manifest for a billable
+        # container whose worker would raise on the same value.
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "INVALID_RIM_PROFILE"):
+                cloud.frame_plan(path, [42.0], ["lighting.rim_profile=null"])
+
+    def test_literal_null_rim_profile_in_manifest_fails_before_dispatch(self):
+        # Same rule without --set: a manifest that literally carries
+        # "rim_profile": null is rejected by the same present-key check.
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(
+                tmp, lighting={"preset": "studio_white",
+                               "rim_profile": None},
+                output_extra={"film_transparent": True})
+            with self.assertRaisesRegex(ValueError, "INVALID_RIM_PROFILE"):
+                cloud.frame_plan(path, [42.0])
+
+    def test_absent_rim_profile_is_never_injected_into_frames(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._studio_fixture(tmp)
+            plan = cloud.frame_plan(path, [42.0, 222.0])
+            self.assertEqual([f["lighting"] for f in plan["frames"]],
+                             [{"preset": "studio_white"}] * 2)
+
+    def test_unknown_override_path_is_still_rejected(self):
         cloud = self._cloud()
         with tempfile.TemporaryDirectory() as tmp:
             path = self._fixture(tmp)
@@ -714,6 +774,158 @@ class FloorRenderWorkerTests(unittest.TestCase):
         self.assertAlmostEqual(
             sum(v[1] for v in verts) / len(verts), -0.25)
 
+
+class _RecordingLightData:
+    """A light data-block stub that records every attribute write.
+
+    The batch-3h contract is about which attributes the worker wrote, so the
+    stub must be observable per light, not one shared MagicMock whose
+    return_value every call would share.
+    """
+
+    def __init__(self, name, light_type):
+        object.__setattr__(self, "writes", {})
+        object.__setattr__(self, "light_name", name)
+        object.__setattr__(self, "light_type", light_type)
+
+    def __setattr__(self, key, value):
+        self.writes[key] = value
+        object.__setattr__(self, key, value)
+
+
+class RimProfileWorkerTests(unittest.TestCase):
+    """Batch 3h opt-in rim-rig selector: real setup_lighting behaviour."""
+
+    @staticmethod
+    def _worker():
+        import render_worker
+        return render_worker
+
+    @staticmethod
+    def _recording_bpy():
+        bpy = mock.MagicMock()
+        bpy.data.objects.get.return_value = None
+        bpy.context.scene.objects = []
+        created = []
+
+        def _new(*args, **kwargs):
+            data = _RecordingLightData(kwargs.get("name"), kwargs.get("type"))
+            created.append(data)
+            return data
+
+        bpy.data.lights.new.side_effect = _new
+        return bpy, created
+
+    @classmethod
+    def _rig(cls, spec, radius=1.5):
+        worker = cls._worker()
+        bpy, created = cls._recording_bpy()
+        with mock.patch.object(worker, "bpy", bpy):
+            worker.setup_lighting(spec, mock.MagicMock(), radius,
+                                  suppress_shadow_catcher=True)
+        return bpy, created
+
+    @staticmethod
+    def _rim(created):
+        matches = [data for data in created if data.light_name == "Rim_Light"]
+        assert len(matches) == 1, [data.light_name for data in created]
+        return matches[0]
+
+    def test_pool_v1_profile_writes_nothing(self):
+        worker = self._worker()
+        data = _RecordingLightData("Rim_Light", 'SPOT')
+        worker.apply_rim_profile(data, "pool_v1", 1.5)
+        self.assertEqual(data.writes, {})
+
+    def test_pool_soft_profile_writes_blend_and_soft_size(self):
+        worker = self._worker()
+        data = _RecordingLightData("Rim_Light", 'SPOT')
+        worker.apply_rim_profile(data, "pool_soft", 1.5)
+        self.assertEqual(data.writes["spot_blend"], 0.35)
+        # 0.35 * radius, computed the way the worker computes it. In binary
+        # that product is 0.5249999999999999, so the decimal 0.525 literal
+        # is not used as the expectation.
+        self.assertEqual(data.writes["shadow_soft_size"], 0.35 * 1.5)
+
+    def test_unknown_profile_raises_loudly(self):
+        worker = self._worker()
+        data = _RecordingLightData("Rim_Light", 'SPOT')
+        with self.assertRaisesRegex(ValueError, "UNKNOWN_RIM_PROFILE"):
+            worker.apply_rim_profile(data, "pool_softt", 1.5)
+        self.assertEqual(data.writes, {})
+
+    def test_absent_profile_writes_neither_attribute(self):
+        _, created = self._rig({"preset": "studio_white"})
+        rim = self._rim(created)
+        self.assertNotIn("spot_blend", rim.writes)
+        self.assertNotIn("shadow_soft_size", rim.writes)
+
+    def test_pool_v1_profile_writes_neither_attribute(self):
+        _, created = self._rig({"preset": "studio_white",
+                                "rim_profile": "pool_v1"})
+        rim = self._rim(created)
+        self.assertNotIn("spot_blend", rim.writes)
+        self.assertNotIn("shadow_soft_size", rim.writes)
+
+    def test_pool_soft_profile_reaches_the_rim_light(self):
+        radius = 1.5
+        _, created = self._rig({"preset": "studio_white",
+                                "rim_profile": "pool_soft"}, radius=radius)
+        rim = self._rim(created)
+        self.assertEqual(rim.writes["spot_blend"], 0.35)
+        self.assertEqual(rim.writes["shadow_soft_size"], 0.35 * radius)
+
+    def test_unknown_profile_creates_no_light_at_all(self):
+        worker = self._worker()
+        bpy, created = self._recording_bpy()
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(ValueError, "UNKNOWN_RIM_PROFILE"):
+                worker.setup_lighting(
+                    {"preset": "studio_white", "rim_profile": "pool_softt"},
+                    mock.MagicMock(), 1.5, suppress_shadow_catcher=True)
+        self.assertEqual(bpy.data.lights.new.call_count, 0)
+        self.assertEqual(created, [])
+
+    def test_profile_is_inert_outside_the_studio_branch(self):
+        # excavation_pit_sunlit ignores rim_profile exactly as it ignores
+        # key_enabled: no error, and no rim light is built at all.
+        _, created = self._rig({"preset": "excavation_pit_sunlit",
+                                "rim_profile": "pool_soft"})
+        self.assertNotIn("Rim_Light", [data.light_name for data in created])
+        for data in created:
+            self.assertNotIn("spot_blend", data.writes)
+
+    def test_disabled_rim_with_a_valid_profile_builds_no_rim_light(self):
+        # A valid profile still validates; rim_enabled=false only skips the
+        # build. No Rim_Light, and no error.
+        _, created = self._rig({"preset": "studio_white",
+                                "rim_enabled": False,
+                                "rim_profile": "pool_soft"})
+        self.assertNotIn("Rim_Light", [data.light_name for data in created])
+
+    def test_unknown_profile_raises_with_analytic_lights_disabled(self):
+        # Review N1: validation is unconditional, so the pure-IBL early return
+        # must not swallow an unknown profile (these two presets used to).
+        worker = self._worker()
+        bpy, created = self._recording_bpy()
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(ValueError, "UNKNOWN_RIM_PROFILE"):
+                worker.setup_lighting(
+                    {"preset": "studio_white", "analytic_lights": False,
+                     "rim_profile": "pool_softt"},
+                    mock.MagicMock(), 1.5, suppress_shadow_catcher=True)
+        self.assertEqual(created, [])
+
+    def test_unknown_profile_raises_outside_the_studio_branch(self):
+        worker = self._worker()
+        bpy, created = self._recording_bpy()
+        with mock.patch.object(worker, "bpy", bpy):
+            with self.assertRaisesRegex(ValueError, "UNKNOWN_RIM_PROFILE"):
+                worker.setup_lighting(
+                    {"preset": "excavation_pit_sunlit",
+                     "rim_profile": "pool_softt"},
+                    mock.MagicMock(), 1.5, suppress_shadow_catcher=True)
+        self.assertEqual(created, [])
 
 class _V:
     def __init__(self, x, y, z):
@@ -1714,6 +1926,15 @@ class CliFloorRouteTests(unittest.TestCase):
 
 
 class NewJobManifestTests(unittest.TestCase):
+    def test_rim_profile_schema_enum_tracks_the_worker_table(self):
+        # Docs/code sync: adding a profile to either side alone must fail here.
+        import render_worker
+        schema = json.loads(
+            (ROOT / "docs/job_manifest.schema.json").read_text(encoding="utf-8"))
+        enum = schema["properties"]["lighting"]["properties"][
+            "rim_profile"]["enum"]
+        self.assertEqual(enum, sorted(render_worker.RIM_PROFILES))
+
     def test_studio_floor_job_is_valid_and_floor_shaped(self):
         from msp_render_cli.manifest import validate_manifest
         data = json.loads(
