@@ -1,8 +1,10 @@
 # Handoff — 2026-09-23 (batch 3g: **removing the Rim alone clears the az42 ramp; the Fill is disproved**; the matched-build matrix retires 3f's build caveat and validates 3f's Key-off magnitude)
 
 Worktree: `C:/Projects/msp-render-pipeline-scene-prep`, branch
-`codex/studiomark-scene-prep`, **8 local commits ahead of `origin`** after this
-round's commit (push waits for Mark's words). Supersedes
+`codex/studiomark-scene-prep`, **9 local commits ahead of `origin`** after this
+round's commits (`3d4b6b5` is the round itself; the commit immediately after it
+is this handoff's discipline correction — read both; push
+waits for Mark's words). Supersedes
 `HANDOFF-2026-09-23-batch3f.md`. No full-suite run this round (it contains
 local render stubs; local renders are banned) — the last full number stands at
 **239 tests OK** from 3e, and the targeted file
@@ -30,7 +32,9 @@ nothing to the lit product appearance (product mean luma 133.07 vs 133.25),
 which is what makes a Rim-targeted fix plausible without disturbing the
 product. **This is a diagnostic, not owner acceptance**: no permanent rig
 change, no threshold change, no asset version, no push. Next round: a
-Rim-targeted fix under ruling 2 (new source asset + acceptance round).
+Rim-targeted fix — see "Next round — the Rim fix" below for the discipline that
+actually applies (it is a renderer/look change; ruling 2's source-asset
+versioning does **not** apply to the rig).
 
 ## Read first, in order
 
@@ -94,12 +98,13 @@ unchanged.
    ~nothing to the product's lit appearance (133.07 vs 133.25; 3f's Key-off, by
    contrast, was 70.33). A targeted change to the Rim's rig parameters — not
    switching it off — is the plausible path to clearing the gate while keeping
-   the product. Under ruling 2 that means a **new source `.blend` version and an
-   acceptance round**, with a pre-declared probe (the same az42/az222 pair plus
-   the cove-band columns). Note the licensed wording: the Rim is *necessary
-   given the other lights and the v2 env*; if you want the stronger "the Rim is
-   the sole origin", render a Rim-only condition (Key and Fill off, Rim on) —
-   not yet measured.
+   the product. **Discipline: it is a renderer/look change, so it needs your
+   look review (ruling 3) and a measured probe — not a new source `.blend`
+   version** (see the next section; an earlier draft of this handoff misapplied
+   ruling 2 here). Note the licensed wording: the Rim is *necessary given the
+   other lights and the v2 env*; if you want the stronger "the Rim is the sole
+   origin", render a Rim-only condition (Key and Fill off, Rim on) — not yet
+   measured.
 2. **Or accept az42 as-is** — the owner look call; the gate stays failed until
    you say otherwise.
 3. **Or revert the v2 env manifest flip** (one line in
@@ -115,6 +120,64 @@ unchanged.
   az ~259 / el ~28.4 — outside both probe frames but imaged by an orbit
   azimuth; must be smoothed before any full-orbit claim.
 - Full-orbit claim and owner look acceptance (2-frame probes support neither).
+
+## Next round — the Rim fix: what a fresh session needs
+
+**Which ruling applies (corrected 2026-09-23).** Ruling 2 — "material changes
+mean a new source `.blend` version and an acceptance round" — is scoped to CAD
+**material assignments stored in the source `.blend`**
+(`docs/rl300-parity.md:869-871`: "these corrections are now part of the source
+hash"). The analytic Rim is created by `render_worker.setup_lighting` at render
+time and is not in the `.blend`, so a Rim fix is a **renderer/look change**: it
+changes the worker sha and the delivered look, it needs Mark's explicit look
+words (ruling 3) plus the frozen gate measurement, and it does **not** need a
+new source `.blend` version. An earlier draft of this handoff said otherwise.
+
+**The Rim's current definition** (`render_worker.py`, studio branch): `SPOT`,
+energy `600.0 * intensity * radius ** 1.5`, `spot_size = 60°`, color white,
+object at `(0, radius*2.8, radius*3.2)` with **no rotation set** — it points
+straight down, laying a pool on the floor behind the product, and the az42 ramp
+is that pool's far edge crossing the cove region in the right background. Read
+the block before designing anything.
+
+**Design space, and the constraint that makes or breaks the evidence.** Levers:
+soften (`spot_size` up, wider/softer emitter), re-aim (give it a rotation so it
+rims the product instead of the floor), re-power (energy down), move (location).
+The constraint: **the pre-fix look must stay reproducible on the same worker
+build**, or the comparison crosses builds again — the exact caveat 3g spent
+three dispatches retiring. Preferred shape: express the fix as a **versioned,
+opt-in rig control in the manifest** (a `lighting.rim_profile`-style selector or
+a new preset variant) so the pre-fix rig and the candidate render in one build
+while the job of record stays untouched until Mark accepts. A silent value
+change in `setup_lighting` destroys that comparability and should be refused.
+
+**Pre-declare before dispatch** (freeze a contract like
+`output/batch3g-fill-rim-probe-contract.md`): the exact override(s), the azimuth
+set, the pre-fix/post-fix pair on one build, the reported measurement set
+(reuse `output/batch3g-measure.py`: full max_step + row, halves, per-column ramp
+at x≈1600/1750, product mean luma, eligible-column drift) and the decision rule.
+Two traps to name in it: (a) the shipped full-frame metric **dilutes** a
+right-localized ramp by ~1.7× (`(252·0.223 + 319·3.3585)/571 = 1.975`), so a fix
+that spreads the ramp without removing it can lower the number while leaving the
+visible tonal boundary — the **look** is what Mark judges, and softening a light
+edge to shave one row of gradient must be presented as a look change, never as a
+number fix; (b) moving or re-aiming the Rim moves the pool edge, so it can
+**relocate the defect to an azimuth the two probe frames cannot see** — cover
+enough azimuths to catch relocation (a coarse orbit is the honest check).
+
+**Cheap attribution-closing run (optional, ~USD 0.08 rate-derived):** Rim-only
+(Key off + Fill off + Rim on), using the existing `lighting.key_enabled` /
+`fill_enabled` controls, would upgrade "necessary given the other lights" to
+"sufficient alone". Worth it only if the stronger claim changes the fix decision.
+
+**Reusable machinery (all `output/`, gitignored):** `batch3g-dispatch.sh`
+(preflight → manifest check → `--execute`, with the exact-boolean guard),
+`batch3g-measure.py`, `batch3g-verify-controls.py`, `batch3g-check-records.py`,
+and this round's specs/contracts as templates. The local gate step is
+`probe_sequence.py --run-dir <dir> --expect-frames 2 --no-encode` (it prints full
+row profiles; pipe it). Cost shape: a two-frame dispatch measured USD 0.079–0.089
+rate-derived; a coarse orbit multiplies render seconds, not container startup —
+estimate in `request.json` before dispatch.
 
 ## What the next agent must know
 
