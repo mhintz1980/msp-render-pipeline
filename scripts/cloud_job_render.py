@@ -16,6 +16,13 @@ resumability mandatory, and section 3.1 measured the per-process overhead at
 0.38 s, so nothing is lost. Frames are sequential remote calls so a failure
 in one frame cannot cost the others.
 
+`--resume` makes that isolation survivable: a frame counts as finished only
+when its result, its GPU-process evidence and every artifact's sha are all on
+disk, so a re-run of a crashed orbit renders the missing frames and nothing
+else, while a plan that drifted since the first dispatch is refused instead of
+being mixed into one sequence. The resume log is the record of those runs;
+request.json stays the original pre-dispatch estimate and is never rewritten.
+
 Runtime pins mirror scripts/verify_scene.py (VERSION/BUILD/ARCHIVE_SHA256);
 a unit test asserts the match so the pin cannot drift silently.
 """
@@ -47,6 +54,16 @@ MEMORY_RATE_PER_GIB_S = 0.00000222
 COLD_START_SECONDS = 229.0  # measured fixed cost of the recorded L4 cold run
 
 FRAME_PREFIX = "frame-"  # frame_name() already carries the "az"; joined: frame-az42
+
+# A resume may only continue the sequence it interrupts, so the request keys
+# below must match the saved one exactly. `inputs` is the load-bearing one: it
+# holds the sha256 of every mounted file, render_worker.py and the frame
+# manifests' sources included, so a worker rebuild or a re-saved CAD source
+# can never be mixed silently into one orbit.
+RESUME_COMPARE_KEYS = ("job_id", "orbit", "runtime", "resources", "frames",
+                       "overrides", "inputs", "render_passes_per_frame")
+
+RESUME_LOG_NAME = "resume-log.json"
 
 
 def sha(path):
@@ -419,7 +436,203 @@ def run_composite(frame_dir, plate, compositing, floor_mode=False):
     return out
 
 
-def main():
+def utc_now():
+    """ISO-8601 UTC at second precision; the resume log's clock, nothing else."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def frame_complete(output_dir, frame):
+    """(complete, reason): a frame is done only when its bytes are provably on disk.
+
+    Every clause can only make a frame incomplete, never billable again: the
+    result parses, it says rendered, the GPU process was seen, it names at
+    least one artifact, and every named artifact exists with the sha the
+    result declared. A corrupt or half-written result is incomplete rather
+    than an exception - a resume must never die on the artifact it inspects.
+    """
+    output_dir = Path(output_dir)
+    result_path = output_dir / f"result-{frame}.json"
+    if not result_path.is_file():
+        return False, "missing result"
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False, "corrupt result"
+    if not isinstance(result, dict):
+        return False, "corrupt result"
+    if result.get("status") != "rendered":
+        return False, "status failed"
+    if result.get("blender_gpu_process_seen") is not True:
+        return False, "no gpu evidence"
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        return False, "empty artifacts"
+    for name, meta in artifacts.items():
+        declared = meta.get("sha256") if isinstance(meta, dict) else None
+        path = output_dir / "cloud" / name
+        if not path.is_file():
+            return False, f"artifact missing: {name}"
+        try:
+            actual = sha(path)
+        except OSError:
+            return False, f"artifact missing: {name}"
+        if not isinstance(declared, str) or actual != declared:
+            return False, f"artifact sha mismatch: {name}"
+    return True, ""
+
+
+def resume_mismatch(saved, request):
+    """The compared request keys this invocation disagrees with the saved one on."""
+    if not isinstance(saved, dict):
+        return ["request.json"]
+    absent = object()
+    return [key for key in RESUME_COMPARE_KEYS
+            if saved.get(key, absent) != request.get(key, absent)]
+
+
+def check_resume_request(output, request, frames):
+    """Refuse a resume whose plan drifted; runs before anything is written.
+
+    A resumed run that silently mixed two worker builds, two CAD revisions or
+    two sets of overrides into one sequence would produce a film nothing can
+    defend, so every difference is a hard stop naming the keys. The saved
+    request.json is the pre-dispatch estimate of record and is never rewritten
+    here; the frame manifests are verified JSON-equal, not re-saved, so a
+    refusal leaves the directory exactly as the crashed run left it.
+    """
+    request_path = Path(output) / "request.json"
+    try:
+        saved = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise SystemExit("RESUME_REQUEST_MISMATCH: request.json")
+    differing = resume_mismatch(saved, request)
+    if differing:
+        raise SystemExit("RESUME_REQUEST_MISMATCH: " + ", ".join(differing))
+    for frame in frames:
+        name = frame_name(frame["camera"]["azimuth_deg"])
+        path = Path(output) / f"manifest-{name}.json"
+        try:
+            saved_frame = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            saved_frame = None
+        if saved_frame != frame:
+            raise SystemExit(f"RESUME_REQUEST_MISMATCH: manifest-{name}")
+
+
+def append_resume_log(output, entry):
+    """Append one resume invocation to the run's record (an on-disk JSON list)."""
+    path = Path(output) / RESUME_LOG_NAME
+    entries = []
+    if path.is_file():
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise SystemExit(f"CORRUPT_RESUME_LOG: {path}")
+        if not isinstance(entries, list):
+            raise SystemExit(f"CORRUPT_RESUME_LOG: {path}")
+    entries.append(entry)
+    staging = path.with_name(path.name + ".tmp")
+    save(staging, entries)
+    staging.replace(path)
+
+
+def dispatch_frames(frames, request, output, remote_call, gpu_evidence,
+                    skip_complete=True):
+    """Dispatch every frame that is not already complete on disk, in plan order.
+
+    The semantics are the pre-resume loop's, unchanged: identity check, then
+    GPU-process evidence (a frame without it is failed, never shippable), the
+    result saved before its bytes are trusted, sha verify against the declared
+    digests, and a hard stop at the first non-rendered frame so a failure
+    cannot cost the frames behind it. Complete frames are skipped, so a resume
+    never re-pays a rendered frame; the stale result of a frame about to be
+    re-rendered is deleted first, so a torn run cannot leave an old result
+    sitting next to new bytes. `skip_complete` is False for any run whose
+    request was not verified against the directory: frames it did not plan
+    are never adopted.
+    """
+    output = Path(output)
+    results = []
+    for frame in frames:
+        name = frame["frame"]
+        if skip_complete and frame_complete(output, name)[0]:
+            continue
+        stale = output / f"result-{name}.json"
+        if stale.is_file():
+            stale.unlink()
+        frame_request = dict(request, **{"request_id": str(uuid.uuid4())}, **frame)
+        result, files = remote_call(frame_request)
+        if result["request_id"] != frame_request["request_id"]:
+            raise ValueError("RESULT_IDENTITY_MISMATCH: " + name)
+        result["blender_gpu_process_seen"] = gpu_evidence(result["gpu_process_samples"])
+        if not result["blender_gpu_process_seen"]:
+            result["failures"].append("NO_BLENDER_GPU_PROCESS_EVIDENCE")
+            result["status"] = "failed"
+        save(output / f"result-{name}.json", result)
+        for file_name, content in files.items():
+            known = result["artifacts"].get(file_name)
+            if known and hashlib.sha256(content).hexdigest() != known["sha256"]:
+                raise ValueError("OUTPUT_HASH_MISMATCH: " + file_name)
+            destination = output / "cloud" / file_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        results.append(result)
+        if result["status"] != "rendered":
+            break  # a failed frame must not cost the frames after it
+    return results
+
+
+def frames_on_disk(output, frame_names):
+    """Every plan frame with a readable result, in plan order, read from disk."""
+    output = Path(output)
+    results = []
+    for name in frame_names:
+        path = output / f"result-{name}.json"
+        if not path.is_file():
+            continue
+        try:
+            results.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    return results
+
+
+def composite_frames(plan, output, results, floor_on):
+    """The local composite pass, over every rendered frame of the plan."""
+    composites = []
+    if plan["compositing"].get("enabled") and (floor_on or plan["plate_path"]):
+        for result in results:
+            if result.get("status") != "rendered":
+                continue
+            composites.append(run_composite(
+                Path(output) / "cloud" / (FRAME_PREFIX + result["frame"]),
+                plan["plate_path"], plan["compositing"],
+                floor_mode=floor_on))
+    return composites
+
+
+def write_status(output, frame_names, results, composites, wall_seconds, resumed):
+    """status.json covers every plan frame on disk, not only this invocation's.
+
+    `passed` needs the whole plan complete: a resume that renders the last
+    frames of a crashed orbit must not report a passing sequence while frames
+    in the middle are missing. Results are read back from disk because the
+    skipped ones were never part of this invocation.
+    """
+    complete = [frame_complete(output, name)[0] for name in frame_names]
+    passed = bool(complete) and all(complete)
+    save(Path(output) / "status.json", {
+        "status": "passed" if passed else "failed",
+        "resumed": bool(resumed),
+        "wall_seconds": wall_seconds,
+        "frames": [{k: r.get(k) for k in ("frame", "status", "blender_exit_code",
+                                          "seconds", "blender_gpu_process_seen")}
+                   for r in results],
+        "composites": composites})
+    return passed
+
+
+def main(argv=None, remote=None, gpu_evidence=None):
     # Modal's progress renderer emits Unicode even when PowerShell redirects it.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -438,7 +651,10 @@ def main():
                         help="manifest override, e.g. camera.depth_of_field.f_stop=3.2; "
                              "may repeat; recorded in request.json")
     parser.add_argument("--execute", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse an existing output dir: skip the frames already "
+                             "rendered and verified on disk, and refuse a changed plan")
+    args = parser.parse_args(argv)
     if args.orbit is not None:
         if args.azimuths is not None:
             raise SystemExit("AZIMUTH_SOURCE_CONFLICT: --orbit and --azimuths "
@@ -451,7 +667,15 @@ def main():
     plan = frame_plan(args.manifest, azimuths, args.overrides)
     floor_on = bool(plan["floor_mode"])
     output = args.output_dir.resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    frame_names = [frame_name(frame["camera"]["azimuth_deg"]) for frame in plan["frames"]]
+    # Only a directory that already holds a request has history to continue;
+    # --resume on a fresh directory is a first run, so one command serves both
+    # the first attempt and every retry of it.
+    resuming = bool(args.resume) and (output / "request.json").is_file()
+    # Without --resume an existing directory is still an error, exactly as
+    # before: a second dispatch into a live sequence would overwrite frames
+    # nobody re-verified.
+    output.mkdir(parents=True, exist_ok=bool(args.resume))
 
     archive = f"blender-{BLENDER_VERSION}-linux-x64.tar.xz"
     url = (f"https://download.blender.org/release/"
@@ -481,77 +705,77 @@ def main():
     request["render_passes_per_frame"] = 2 if floor_on else 1
     request["cost_estimate_usd"] = estimate_cost_usd(
         [frame_render_seconds(floor_mode=floor_on)] * len(azimuths))
-    save(output / "request.json", request)
-    for frame in plan["frames"]:
-        save(output / f"manifest-{frame_name(frame['camera']['azimuth_deg'])}.json", frame)
+    if resuming:
+        # Nothing is written before this check passes: a mismatched resume
+        # must leave the directory as the crashed run left it.
+        check_resume_request(output, request, plan["frames"])
+    else:
+        save(output / "request.json", request)
+        for frame in plan["frames"]:
+            save(output / f"manifest-{frame_name(frame['camera']['azimuth_deg'])}.json", frame)
+    skipped, pending, skip_reasons = [], list(frame_names), {}
+    if resuming:
+        verdicts = {name: frame_complete(output, name) for name in frame_names}
+        skipped = [name for name in frame_names if verdicts[name][0]]
+        pending = [name for name in frame_names if not verdicts[name][0]]
+        skip_reasons = {name: verdicts[name][1] for name in pending}
+    if args.resume and args.execute:
+        # The invocation record, written before anything billable so a retry
+        # that dies at once still leaves an account of itself. An empty
+        # pending list is priced at zero: rendering nothing costs nothing.
+        per_frame = frame_render_seconds(floor_mode=floor_on)
+        append_resume_log(output, {
+            "started_utc": utc_now(), "skipped": skipped, "pending": pending,
+            "skip_reasons": skip_reasons,
+            "cost_estimate_usd": (estimate_cost_usd([per_frame] * len(pending))
+                                  if pending else 0.0)})
     print(json.dumps({"plan": request["frames"], "cost_estimate_usd": request["cost_estimate_usd"],
                       "output": str(output)}))
     if not args.execute:
         print("Preflight only; no cloud call.")
         return 0
 
-    import modal
-    from msp_render_cli.remote_job import gpu_process_evidence
-    image = (modal.Image.debian_slim(python_version=f"{sys.version_info.major}.{sys.version_info.minor}")
-             .apt_install("wget", "xz-utils", "libglu1-mesa", "libxi6", "libxrender1", "libxfixes3",
-                          "libxcursor1", "libxinerama1", "libxkbcommon0", "libsm6", "libxxf86vm1",
-                          "libgl1")
-             .run_commands(f"wget --timeout=60 --tries=2 -q {url} -O /tmp/blender.tar.xz",
-                           f"echo '{BLENDER_ARCHIVE_SHA256}  /tmp/blender.tar.xz' | sha256sum -c -",
-                           "mkdir /opt/blender && tar -xf /tmp/blender.tar.xz -C /opt/blender --strip-components=1",
-                           "rm /tmp/blender.tar.xz"))
-    for dest, source in sorted(plan["mounts"].items()):
-        image = image.add_local_file(Path(source), dest)
-    for frame in plan["frames"]:
-        name = frame_name(frame["camera"]["azimuth_deg"])
-        image = image.add_local_file(output / f"manifest-{name}.json", f"/input/manifest-{name}.json")
-    app = modal.App("studiomark-tv2-preview")
-    worker = app.function(image=image, gpu=args.gpu, cpu=4, memory=16384, timeout=1200,
-                          startup_timeout=300, max_containers=1, retries=0, scaledown_window=60,
-                          serialized=True)(cloud_worker)
     started = time.monotonic()
-    results = []
     try:
-        with modal.enable_output(), app.run():
-            for frame in request["frames"]:
-                frame_request = dict(request, **{"request_id": str(uuid.uuid4())}, **frame)
-                result, files = worker.remote(frame_request)
-                if result["request_id"] != frame_request["request_id"]:
-                    raise ValueError("RESULT_IDENTITY_MISMATCH: " + frame["frame"])
-                result["blender_gpu_process_seen"] = gpu_process_evidence(
-                    result["gpu_process_samples"])
-                if not result["blender_gpu_process_seen"]:
-                    result["failures"].append("NO_BLENDER_GPU_PROCESS_EVIDENCE")
-                    result["status"] = "failed"
-                save(output / f"result-{frame['frame']}.json", result)
-                for name, content in files.items():
-                    known = result["artifacts"].get(name)
-                    if known and hashlib.sha256(content).hexdigest() != known["sha256"]:
-                        raise ValueError("OUTPUT_HASH_MISMATCH: " + name)
-                    destination = output / "cloud" / name
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_bytes(content)
-                results.append(result)
-                if result["status"] != "rendered":
-                    break  # a failed frame must not cost the frames after it
-        composites = []
-        if plan["compositing"].get("enabled") and (floor_on or plan["plate_path"]):
-            for result in results:
-                if result["status"] != "rendered":
-                    continue
-                composites.append(run_composite(
-                    output / "cloud" / (FRAME_PREFIX + result["frame"]),
-                    plan["plate_path"], plan["compositing"],
-                    floor_mode=floor_on))
-        save(output / "status.json", {
-            "status": "passed" if results and all(r["status"] == "rendered" for r in results) else "failed",
-            "wall_seconds": round(time.monotonic() - started, 3),
-            "frames": [{k: r[k] for k in ("frame", "status", "blender_exit_code", "seconds",
-                                          "blender_gpu_process_seen")} for r in results],
-            "composites": composites})
+        if resuming and not pending:
+            # Every frame of the plan is already on disk: finish from disk,
+            # never import modal, never spend a cloud second.
+            pass
+        elif remote is None:
+            import modal
+            from msp_render_cli.remote_job import gpu_process_evidence as evidence_fn
+            gpu_evidence = evidence_fn
+            image = (modal.Image.debian_slim(python_version=f"{sys.version_info.major}.{sys.version_info.minor}")
+                     .apt_install("wget", "xz-utils", "libglu1-mesa", "libxi6", "libxrender1", "libxfixes3",
+                                  "libxcursor1", "libxinerama1", "libxkbcommon0", "libsm6", "libxxf86vm1",
+                                  "libgl1")
+                     .run_commands(f"wget --timeout=60 --tries=2 -q {url} -O /tmp/blender.tar.xz",
+                                   f"echo '{BLENDER_ARCHIVE_SHA256}  /tmp/blender.tar.xz' | sha256sum -c -",
+                                   "mkdir /opt/blender && tar -xf /tmp/blender.tar.xz -C /opt/blender --strip-components=1",
+                                   "rm /tmp/blender.tar.xz"))
+            for dest, source in sorted(plan["mounts"].items()):
+                image = image.add_local_file(Path(source), dest)
+            for frame in plan["frames"]:
+                name = frame_name(frame["camera"]["azimuth_deg"])
+                image = image.add_local_file(output / f"manifest-{name}.json", f"/input/manifest-{name}.json")
+            app = modal.App("studiomark-tv2-preview")
+            worker = app.function(image=image, gpu=args.gpu, cpu=4, memory=16384, timeout=1200,
+                                  startup_timeout=300, max_containers=1, retries=0, scaledown_window=60,
+                                  serialized=True)(cloud_worker)
+            with modal.enable_output(), app.run():
+                dispatch_frames(request["frames"], request, output, worker.remote, gpu_evidence,
+                                skip_complete=resuming)
+        else:
+            # An injected remote (tests): the same loop, no Modal in the process.
+            dispatch_frames(request["frames"], request, output, remote, gpu_evidence,
+                            skip_complete=resuming)
+        results = frames_on_disk(output, frame_names)
+        composites = composite_frames(plan, output, results, floor_on)
+        passed = write_status(output, frame_names, results, composites,
+                              round(time.monotonic() - started, 3), resuming)
         print(json.dumps({"status": json.loads((output / "status.json").read_text())["status"],
                           "composites": composites, "output": str(output)}))
-        return 0 if results and all(r["status"] == "rendered" for r in results) else 1
+        return 0 if passed else 1
     except Exception as exc:
         save(output / "status.json", {"status": "failed_or_submission_unknown", "error": str(exc)})
         raise
