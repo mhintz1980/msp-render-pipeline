@@ -121,6 +121,21 @@
           "default": true,
           "description": "Set false for pure image-based lighting: the HDRI is then the only light source."
         },
+        "key_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Batch 3f experimental diagnostic only: set false to omit Key_Softbox from the studio_dark/studio_white analytic rig while leaving Fill_Softbox and Rim_Light unchanged. No effect when analytic_lights is false; false is not an accepted production look."
+        },
+        "fill_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Batch 3g experimental diagnostic only: set false to omit Fill_Softbox from the studio_dark/studio_white analytic rig while leaving Key_Softbox and Rim_Light unchanged. No effect when analytic_lights is false; false is not an accepted production look."
+        },
+        "rim_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Batch 3g experimental diagnostic only: set false to omit Rim_Light from the studio_dark/studio_white analytic rig while leaving Key_Softbox and Fill_Softbox unchanged. No effect when analytic_lights is false; false is not an accepted production look."
+        },
         "color_temperature_k": { "type": "number" },
         "shadow_catcher": {
           "type": "boolean",

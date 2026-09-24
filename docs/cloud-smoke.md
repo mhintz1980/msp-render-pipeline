@@ -667,3 +667,150 @@ byte/deg (falling taper x negfill comp, feature at az ~259 el ~28.4) —
 outside both probe cameras' frames but some orbit azimuth (~bg 79) will
 image it in video. Cheap hardening for the next dispatch: refuse to
 write ACCEPTED_OUTPUT without a sha guard (GLM impl review finding 7).
+
+### 2026-09-23 batch-3f key-only isolation: az42 Key-off 2.4253 FAILS 1.8 (worse than all-lights); Key-alone hypothesis DISPROVED; whole-rig importance re-confirmed; carrier unresolved
+
+Chain (all in `output/`: frozen contract `batch3f-key-only-probe-contract.md`,
+two frames az42/az222, exact lowercase `false`; `batch3f-rig-diagnostic-contract.md`
+pre-declared interpretation; DeepSeek independent review
+`batch3f-key-isolation-review-deepseek.md` SHIP-TO-MODAL for diagnostic only;
+impl note `batch3f-key-isolation-impl-note.md`, opt-in `lighting.key_enabled`
+default true, no default injection). Producer this task: DeepSeek (GLM was the
+prior implementation producer). Results note `batch3f-key-only-results.md`.
+
+**Dispatches (already executed; no re-dispatch this task).** 3f control
+(all-analytic-off): `output/preview-studio-floor-3f-ibl-20260923/`, app
+`ap-ATVs99jMnnOjGyVw5AG2Pk`, only override `lighting.analytic_lights=false`.
+3f Key-off: `output/preview-studio-floor-3f-key-20260923/`, app
+`ap-CUlinGZ4CirXYPhFzVRWnY`, `request.json:21-22` exactly
+`lighting.key_enabled=false`, estimate USD 0.197 (`request.json:3`); both
+manifests set `key_enabled` boolean `false`, `analytic_lights` true, v2 env sha
+`617e63a7...` unchanged. Worker build differs across the comparison: 3e
+all-lights and 3f-ibl all-off both ran `render_worker.py` sha256
+`153497382f8c09f78d21b597421863e251f4e39121b5eac162d625e9e23c7bd2` while the
+Key-off run ran `fde78deacaa381d19a0ebc37abcb20f723d5e6828fe73179c603dabf3e577d56`
+(`request.json:17` each). The only source delta is the Key block wrapped under
+`lighting_spec.get("key_enabled", True)` — Fill/Rim and every value untouched,
+default behavior unchanged, 9 targeted tests pass — but no same-build pixel
+baseline exists, so the cross-run pixel comparisons below are a controlled
+comparison **subject to a build-invariance assumption**. No launch failures
+(one clean app each; 2 rendered frames, L4/OPTIX, exit 0; `status.json:11,18`
+seconds 232.812 + 13.128 = 245.940 s -> **USD 0.076 RATE-DERIVED**, no invoice
+queried). The Key app id `ap-CUlinGZ4CirXYPhFzVRWnY` and both
+`floor_composite ... success` lines are captured at
+`output/batch3f-key-modal.log:3,20-24`.
+
+**GATE RESULT (shipped pre-lens metric recomputed from saved frames).** az42
+**Key-off 2.4253 (row 553) FAIL (>1.8)** vs all-lights 1.9745 (row 552) and
+all-off 0.8016 (row 3); right half 4.1846 vs left 0.7652 (all-off 0.7992 /
+0.8049). az222 Key-off 0.8925 (row 3) passes the separate <=1.0 diagnostic
+guard (all-off 1.0019 misses by 0.0019); 3e az222 0.7901. Eligible background
+columns identical across all three runs (az42 252 left / 319 right, az222 240 /
+326; symmetric difference 0), so no mask-column drift.
+
+**Interpretation (pre-declared).** Key-off az42 >= 1.8 at ~row 552,
+right-concentrated: **removing the Key alone does not clear the step**, so a
+Key-only fix cannot resolve az42 — the "Key is the whole carrier" hypothesis is
+disproved. That failure is direct on the Key run's own build; the "worse than
+all-lights" magnitude spans the worker build change, so the Key's interaction
+or partial contribution cannot be ruled out. Whole-rig importance rests on the
+matched-build 3e (all-lights) vs 3f-ibl (all-off) comparison, which names none
+of Key/Fill/Rim; the carrier remains Fill, Rim, the Key's interaction, or a
+Fill/Rim/interaction (a three-condition comparison cannot separate them).
+az222's <=1.0 guard is tested honestly and is not a production gate. Product
+look read separately (Blender-python/`view_image` on the saved
+`composite-prelens.png`): Key-off az42 is visibly duller and darker (product
+mean luma 133.25 -> 70.33 on mask==255, ITU-R 601 = 0.299/0.587/0.114) while
+az222 barely changes (106.42 -> 96.93); the Key-off look is darker in this
+actual failing frame, and owner look is not accepted.
+
+**Verification.** `.venv`-substitute run of
+`-m unittest discover -s tests -p test_floor_mode.py -k key_enabled` -> **Ran 9
+tests, OK** (Blender bundled CPython + `PYTHONPATH=.test_deps`; the project
+venv is denied in this sandbox, uv base python `Access is denied`). No local
+render. Sequence report `status` "failed" only on `BACKGROUND_BAND_STEP: az42
+2.4253 > 1.8 (pre-lens)`, `sequence-report.json:5050-5053`; fidelity and grain
+gates pass.
+
+**Owner sign-off pending, unchanged:** v2 env az~259 / el~28.4 steep edge, LDR
+clipping/headroom reading, half-azimuth-step target, full orbit, owner look
+acceptance. No threshold widened (ruling 4). Next probe recommended, not
+dispatched: add `lighting.fill_enabled` / `lighting.rim_enabled` opt-in
+controls and run two-frame (az42 + az222) Fill-off and separately Rim-off
+diagnostics under the locked v2 env, each a one-light removal mirroring this
+probe. The new controls are proposed here and are to be independently reviewed
+before any billable dispatch.
+
+### 2026-09-23 batch-3g fill/rim isolation: az42 Rim-off 0.7167 clears the 1.5 falsification line and the 1.8 gate; Fill-off 1.9642 still fails; Rim shown sufficient to create the az42 ramp given the other lights and the v2 env, Fill-alone disproved
+
+Chain (all in `output/`): frozen contract
+`batch3g-fill-rim-probe-contract.md` (pre-declared rules 1-4, appended
+pre-dispatch audit; DeepSeek review SHIP-TO-MODAL; GLM seat implemented the
+`lighting.fill_enabled` / `lighting.rim_enabled` opt-in controls, default
+true, no default injection). Results note `batch3g-fill-rim-results.md`;
+measurements `batch3g-measurements.json`; method `batch3g-measure.py`.
+
+**Dispatches (already executed; no re-dispatch this task).** Three two-frame
+runs (az42 + az222), `jobs/rl300_05_studio-floor.json`, v2 env sha
+`617e63a7...`, all on ONE worker build `render_worker.py` sha256
+`ed11ba89038e...`: A baseline, app `ap-nTFlLEKccqtQbwr2i8cpio`, no
+override, 274.507 + 13.437 = 287.944 s (wall 302.449); B Fill-off
+`lighting.fill_enabled=false`, app `ap-xTF3wQmJ6S2CBhxnmJ3AD5`, 240.632 +
+12.944 = 253.576 s (wall 265.439); C Rim-off `lighting.rim_enabled=false`,
+app `ap-OX3nRdDXZMP5r6kPUUInPM`, 262.512 + 13.822 = 276.334 s (wall
+287.926). Preflight estimate USD 0.197 each (0.591 total) recorded in
+`request.json` before dispatch; rate-derived cost at 0.00030992 USD/s:
+A 0.08924, B 0.07859, C 0.08564, total 0.25347 - **RATE-DERIVED, no invoice
+queried**. Logs: `batch3g-<tag>-modal.log`, `batch3g-<tag>-preflight.log`.
+
+**GATE RESULT (shipped pre-lens metric recomputed from saved frames).**
+A FAILED `BACKGROUND_BAND_STEP: az42 1.9745 > 1.8 (pre-lens)`; B FAILED the
+same gate at 1.9642 (peak row 553, right 3.4344 vs left 0.5537); C PASSED
+with no problems (az42 0.7167434692382812 at row 3, right 0.6919 vs left
+0.7496). Fidelity and grain gates pass in all three. az222 passes the
+separate <=1.0 diagnostic guard in all three (A 0.7901153564453125, B
+0.80059814453125, C 0.8149948120117188, all row 3). Eligible background
+columns identical in all three runs and vs 3e/3f (az42 252 left / 319 right,
+az222 240 / 326; symmetric difference 0) - no mask drift.
+
+**Interpretation (pre-declared rules).** (1) Build invariance: 3g run A
+(worker `ed11ba89...`, no override) reproduces the 3e all-lights run
+(worker `15349738...`, no override) exactly (az42 1.9744644165039062 row
+552, halves 0.7721/3.3585, az222 0.7901153564453125 row 3, luma 133.25,
+ramps +4.00/+3.59), proving that adding the default-true key/fill/rim
+gating wraps is pixel-neutral for the all-lights condition. The 3f
+implication is an inference by analogy: 3f's Key-off ran worker
+`fde78dea...`, never re-rendered against a same-build all-lights
+baseline, so its "worse than all-lights" magnitude (2.4253) is supported
+but not proven by a same-build test; B/C are matched-build to A by
+construction. The pre-declared conditional fourth dispatch was NOT
+triggered. (2) Rim: rule 1 fires - C
+0.7167 <= 1.5, right-half excess collapsed (0.6919 vs 0.7496), per-column
+ramp at x=1600/x=1750 is +1.59/+1.59, the scattered noise floor seen with the
+rig fully off. The Rim is sufficient to create the az42 ramp given the other
+lights and the v2 env; a fix targeting the Rim is required. This does NOT
+mean switching the Rim off is the right final look. (3) Fill: rule 2 fires -
+B 1.9642 >= 1.8 with the peak still in the ~540-570 band and
+right-concentrated; the Fill alone does not carry the ramp; the remaining rig
+plus interaction still produces it. (4) Rule 4: C's peak row 3 is the
+frame-top artefact every run shows at az222 (3f all-off also showed it at
+az42); eligible columns are identical, so the basis did not move - the
+signature of the ramp being eliminated, not a broken measurement.
+
+**Look, separate from gates.** Product mean luma (ITU-R 601, mask==255):
+A 133.25, B 128.26, C 133.07 on az42. The Rim contributes essentially nothing
+to the lit product appearance (133.07 vs 133.25), unlike 3f's Key-off (70.33)
+and all-off (57.27), so a Rim-targeted fix has a plausible path to removing
+the background ramp without disturbing the product look. Diagnostic
+observation, NOT owner acceptance; the look is Mark's call.
+
+**Mechanism note (interpretation, not a threshold argument).** The az42
+feature is a ~6-row right-localized ramp (rows ~548-558), not a one-row edge;
+the shipped full-frame metric is a weighted average that dilutes it:
+(252*0.223 + 319*3.3585) / 571 = 1.975.
+
+**Owner sign-off pending, unchanged:** the az42 production gate result stands
+FAILED for A and B; the v2 env az~259/el~28.4 steep edge, LDR
+clipping/headroom reading, half-azimuth-step target, any full-orbit claim,
+and owner look acceptance remain unresolved. No threshold widened (ruling 4);
+no manifest, rig, or asset was permanently changed by this round.

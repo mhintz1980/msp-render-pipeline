@@ -109,12 +109,25 @@ def reject_duplicate_azimuths(azimuths) -> None:
     return None
 
 
+# Schema-declared optional paths (docs/job_manifest.schema.json) that an
+# explicit --set may create in an older job manifest that omits them. Every
+# other absent path still raises UNKNOWN_OVERRIDE_PATH, so existing jobs keep
+# their exact manifest structure unless the operator names this one path.
+SCHEMA_OPTIONAL_OVERRIDE_PATHS = frozenset({
+    "lighting.key_enabled",
+    "lighting.fill_enabled",
+    "lighting.rim_enabled",
+})
+
+
 def apply_overrides(manifest, overrides):
     """Apply dotted-path=value overrides in place; unknown paths are errors.
 
     Values parse as JSON when they can (numbers, booleans) and stay strings
     otherwise (paths). A typo'd path must fail before a billable call, not
-    silently render the unmodified job.
+    silently render the unmodified job. Only paths listed in
+    SCHEMA_OPTIONAL_OVERRIDE_PATHS may be created when absent; no default is
+    ever injected without an explicit override.
     """
     for override in overrides or []:
         path, sep, raw = override.partition("=")
@@ -122,11 +135,17 @@ def apply_overrides(manifest, overrides):
             raise ValueError(f"BAD_OVERRIDE (expected path=value): {override}")
         node = manifest
         keys = path.split(".")
+        may_create = path in SCHEMA_OPTIONAL_OVERRIDE_PATHS
         for key in keys[:-1]:
-            if not isinstance(node, dict) or key not in node:
+            if not isinstance(node, dict):
                 raise ValueError(f"UNKNOWN_OVERRIDE_PATH: {path}")
-            node = node[key]
-        if not isinstance(node, dict) or keys[-1] not in node:
+            if may_create:
+                node = node.setdefault(key, {})
+            elif key not in node:
+                raise ValueError(f"UNKNOWN_OVERRIDE_PATH: {path}")
+            else:
+                node = node[key]
+        if not isinstance(node, dict) or (not may_create and keys[-1] not in node):
             raise ValueError(f"UNKNOWN_OVERRIDE_PATH: {path}")
         try:
             value = json.loads(raw)

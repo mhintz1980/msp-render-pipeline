@@ -381,6 +381,78 @@ class DispatcherFloorPreflightTests(unittest.TestCase):
             plan = cloud.frame_plan(path, [42.0, 222.0])
             self.assertTrue(plan["floor_mode"])
 
+    def test_key_enabled_override_reaches_frames_without_touching_source(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            source_before = path.read_bytes()
+            plan = cloud.frame_plan(
+                path, [42.0, 222.0], ["lighting.key_enabled=false"])
+            self.assertEqual([f["lighting"]["key_enabled"]
+                              for f in plan["frames"]], [False, False])
+            self.assertEqual(path.read_bytes(), source_before)
+
+    def test_key_enabled_absent_floor_frames_keep_the_previous_structure(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            plan = cloud.frame_plan(path, [42.0, 222.0])
+            self.assertEqual([f["lighting"] for f in plan["frames"]],
+                             [{"floor": {"enabled": True}}] * 2)
+
+    def test_key_enabled_absent_studio_white_frames_keep_the_previous_structure(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(
+                tmp, lighting={"preset": "studio_white"},
+                output_extra={"film_transparent": True})
+            plan = cloud.frame_plan(path, [42.0])
+            self.assertFalse(plan["floor_mode"])
+            self.assertEqual([f["lighting"] for f in plan["frames"]],
+                             [{"preset": "studio_white"}])
+
+    def test_key_enabled_explicit_source_value_reaches_frames_verbatim(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            for source_value in (True, False):
+                path = self._fixture(
+                    tmp, lighting={"preset": "studio_white",
+                                   "key_enabled": source_value},
+                    output_extra={"film_transparent": True})
+                plan = cloud.frame_plan(path, [42.0])
+                self.assertEqual([f["lighting"]["key_enabled"]
+                                  for f in plan["frames"]], [source_value])
+
+    def test_fill_enabled_override_reaches_frames_without_touching_source(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            source_before = path.read_bytes()
+            plan = cloud.frame_plan(
+                path, [42.0, 222.0], ["lighting.fill_enabled=false"])
+            self.assertEqual([f["lighting"]["fill_enabled"]
+                              for f in plan["frames"]], [False, False])
+            self.assertEqual(path.read_bytes(), source_before)
+
+    def test_rim_enabled_override_reaches_frames_without_touching_source(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            source_before = path.read_bytes()
+            plan = cloud.frame_plan(
+                path, [42.0, 222.0], ["lighting.rim_enabled=false"])
+            self.assertEqual([f["lighting"]["rim_enabled"]
+                              for f in plan["frames"]], [False, False])
+            self.assertEqual(path.read_bytes(), source_before)
+
+    def test_key_enabled_stays_the_only_creatable_override_path(self):
+        cloud = self._cloud()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            with self.assertRaisesRegex(ValueError, "UNKNOWN_OVERRIDE_PATH"):
+                cloud.frame_plan(
+                    path, [42.0], ["lighting.key_enabled_typo=false"])
+
     def test_floor_with_transparent_film_fails_before_dispatch(self):
         cloud = self._cloud()
         with tempfile.TemporaryDirectory() as tmp:
@@ -474,6 +546,76 @@ class FloorRenderWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "CYC_MESH_INVALID"):
                 worker.build_studio_floor(
                     1.5, scene=_cove_camera((0.0, 0.0, 0.0), 1.5))
+
+    @staticmethod
+    def _analytic_light_names(spec):
+        worker = FloorRenderWorkerTests._worker()
+        bpy = mock.MagicMock()
+        bpy.data.objects.get.return_value = None
+        bpy.context.scene.objects = []
+        with mock.patch.object(worker, "bpy", bpy):
+            worker.setup_lighting(
+                spec, mock.MagicMock(), 1.5, suppress_shadow_catcher=True)
+        return [call.kwargs["name"]
+                for call in bpy.data.lights.new.call_args_list]
+
+    def test_missing_key_enabled_creates_the_unchanged_full_rig(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_white"})
+        self.assertEqual(
+            names, ["Key_Softbox", "Fill_Softbox", "Rim_Light"])
+
+    def test_explicit_true_key_enabled_creates_the_unchanged_full_rig(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_dark", "key_enabled": True})
+        self.assertEqual(
+            names, ["Key_Softbox", "Fill_Softbox", "Rim_Light"])
+
+    def test_false_key_enabled_omits_only_the_studio_key(self):
+        for preset in ("studio_white", "studio_dark"):
+            with self.subTest(preset=preset):
+                names = self._analytic_light_names(
+                    {"preset": preset, "key_enabled": False})
+                self.assertEqual(names, ["Fill_Softbox", "Rim_Light"])
+
+    def test_analytic_lights_off_with_key_enabled_false_still_skips_all(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_white", "analytic_lights": False,
+             "key_enabled": False})
+        self.assertEqual(names, [])
+
+    def test_explicit_true_fill_and_rim_enabled_create_the_unchanged_full_rig(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_dark", "fill_enabled": True,
+             "rim_enabled": True})
+        self.assertEqual(
+            names, ["Key_Softbox", "Fill_Softbox", "Rim_Light"])
+
+    def test_false_fill_enabled_omits_only_the_studio_fill(self):
+        for preset in ("studio_white", "studio_dark"):
+            with self.subTest(preset=preset):
+                names = self._analytic_light_names(
+                    {"preset": preset, "fill_enabled": False})
+                self.assertEqual(names, ["Key_Softbox", "Rim_Light"])
+
+    def test_false_rim_enabled_omits_only_the_studio_rim(self):
+        for preset in ("studio_white", "studio_dark"):
+            with self.subTest(preset=preset):
+                names = self._analytic_light_names(
+                    {"preset": preset, "rim_enabled": False})
+                self.assertEqual(names, ["Key_Softbox", "Fill_Softbox"])
+
+    def test_all_three_flags_false_leave_no_analytic_light(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_white", "key_enabled": False,
+             "fill_enabled": False, "rim_enabled": False})
+        self.assertEqual(names, [])
+
+    def test_analytic_lights_off_with_fill_and_rim_false_still_skips_all(self):
+        names = self._analytic_light_names(
+            {"preset": "studio_white", "analytic_lights": False,
+             "fill_enabled": False, "rim_enabled": False})
+        self.assertEqual(names, [])
 
     def test_matte_render_restores_all_state_even_on_failure(self):
         worker = self._worker()

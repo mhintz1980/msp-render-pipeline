@@ -435,30 +435,39 @@ def setup_lighting(lighting_spec: Dict[str, Any], center: Any, radius: float,
         return
 
     if preset in ["studio_dark", "studio_white"]:
-        key_data = bpy.data.lights.new(name="Key_Softbox", type='AREA')
-        key_data.energy = 800.0 * intensity * (radius ** 1.5)
-        key_data.size = radius * 1.8
-        key_data.color = (1.0, 0.98, 0.95)
-        key_obj = bpy.data.objects.new("Key_Softbox", key_data)
-        key_obj.location = (radius * 2.2, -radius * 2.2, radius * 2.8)
-        bpy.context.scene.collection.objects.link(key_obj)
-        key_obj.rotation_euler = (math.radians(45), 0, math.radians(45))
+        # Batch 3f isolation control: false is an experimental diagnostic
+        # that removes only the key; Fill/Rim and every value stay pinned.
+        if lighting_spec.get("key_enabled", True):
+            key_data = bpy.data.lights.new(name="Key_Softbox", type='AREA')
+            key_data.energy = 800.0 * intensity * (radius ** 1.5)
+            key_data.size = radius * 1.8
+            key_data.color = (1.0, 0.98, 0.95)
+            key_obj = bpy.data.objects.new("Key_Softbox", key_data)
+            key_obj.location = (radius * 2.2, -radius * 2.2, radius * 2.8)
+            bpy.context.scene.collection.objects.link(key_obj)
+            key_obj.rotation_euler = (math.radians(45), 0, math.radians(45))
 
-        fill_data = bpy.data.lights.new(name="Fill_Softbox", type='AREA')
-        fill_data.energy = 350.0 * intensity * (radius ** 1.5)
-        fill_data.size = radius * 2.2
-        fill_data.color = (0.95, 0.97, 1.0)
-        fill_obj = bpy.data.objects.new("Fill_Softbox", fill_data)
-        fill_obj.location = (-radius * 2.5, -radius * 1.8, radius * 1.8)
-        bpy.context.scene.collection.objects.link(fill_obj)
+        # Batch 3g isolation control: false is an experimental diagnostic
+        # that removes only the fill; Key/Rim and every value stay pinned.
+        if lighting_spec.get("fill_enabled", True):
+            fill_data = bpy.data.lights.new(name="Fill_Softbox", type='AREA')
+            fill_data.energy = 350.0 * intensity * (radius ** 1.5)
+            fill_data.size = radius * 2.2
+            fill_data.color = (0.95, 0.97, 1.0)
+            fill_obj = bpy.data.objects.new("Fill_Softbox", fill_data)
+            fill_obj.location = (-radius * 2.5, -radius * 1.8, radius * 1.8)
+            bpy.context.scene.collection.objects.link(fill_obj)
 
-        rim_data = bpy.data.lights.new(name="Rim_Light", type='SPOT')
-        rim_data.energy = 600.0 * intensity * (radius ** 1.5)
-        rim_data.spot_size = math.radians(60)
-        rim_data.color = (1.0, 1.0, 1.0)
-        rim_obj = bpy.data.objects.new("Rim_Light", rim_data)
-        rim_obj.location = (0, radius * 2.8, radius * 3.2)
-        bpy.context.scene.collection.objects.link(rim_obj)
+        # Batch 3g isolation control: false is an experimental diagnostic
+        # that removes only the rim; Key/Fill and every value stay pinned.
+        if lighting_spec.get("rim_enabled", True):
+            rim_data = bpy.data.lights.new(name="Rim_Light", type='SPOT')
+            rim_data.energy = 600.0 * intensity * (radius ** 1.5)
+            rim_data.spot_size = math.radians(60)
+            rim_data.color = (1.0, 1.0, 1.0)
+            rim_obj = bpy.data.objects.new("Rim_Light", rim_data)
+            rim_obj.location = (0, radius * 2.8, radius * 3.2)
+            bpy.context.scene.collection.objects.link(rim_obj)
 
     elif preset == "excavation_pit_sunlit":
         # Direct High-Contrast 5400K Key Sun (matched to plate shadow angles)
