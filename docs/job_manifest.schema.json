@@ -139,7 +139,7 @@
         "rim_profile": {
           "type": "string",
           "enum": ["pool_soft", "pool_v1"],
-          "description": "Batch 3h candidate-look selector for the studio_dark/studio_white analytic rig, opt-in and absent by default. pool_v1 is the shipped Rim_Light rig exactly (no attribute is written) and is what an absent value selects; pool_soft diffuses the same SPOT in the same place at the same power (spot_blend 0.35, shadow_soft_size 0.35*radius). No effect in any other lighting branch, no effect when analytic_lights is false, and pool_soft is not an owner-accepted look."
+          "description": "Batch 3h look selector for the studio_dark/studio_white analytic rig, opt-in and absent by default. pool_v1 is the shipped Rim_Light rig exactly (no attribute is written) and is what an absent value selects; pool_soft diffuses the same SPOT in the same place at the same power (spot_blend 0.35, shadow_soft_size 0.35*radius). No effect in any other lighting branch and no effect when analytic_lights is false. pool_soft is the owner-accepted rig look of record since 2026-09-24 (jobs/rl300_05_studio-floor.json carries it); an absent value still selects pool_v1."
         },
         "color_temperature_k": { "type": "number" },
         "shadow_catcher": {

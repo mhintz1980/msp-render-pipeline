@@ -189,6 +189,19 @@ class TestStudioSoftboxEnv(unittest.TestCase):
         self.assertEqual(white_manifest["lighting"]["hdri_path"],
                          "backgrounds/env_studio-softbox.png")
 
+    def test_job_of_record_carries_the_accepted_rim_profile(self):
+        """2026-09-24 owner acceptance: pool_soft is the rig look of record
+        for the floor job (the job the 3h orbit measured); the stills job
+        keeps the value absent (= pool_v1), the exact rig its accepted
+        parity was measured with."""
+        floor_manifest = json.loads(
+            (ROOT / "jobs" / "rl300_05_studio-floor.json").read_text())
+        white_manifest = json.loads(
+            (ROOT / "jobs" / "rl300_04_studio-white.json").read_text())
+        self.assertEqual(floor_manifest["lighting"]["rim_profile"],
+                         "pool_soft")
+        self.assertNotIn("rim_profile", white_manifest["lighting"])
+
 
 class AcceptedOutputGuardTests(unittest.TestCase):
     """3e GLM finding 7: the accepted asset must never change on disk."""

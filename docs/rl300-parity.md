@@ -1157,3 +1157,34 @@ number of unique composited frames**, measured on the encoded file with
 No threshold is widened by any of this: the new frame-count gate is an
 equality, and the 35 dB decode PSNR floor and 3× neighbour-outlier factor are
 unchanged.
+
+## 2026-09-24 — owner look acceptance: `pool_soft` is the rig look of record
+
+Asked for a decision among the four options the 3h handoff put to him (accept
+`pool_soft` / keep the shipped rig with az42+az318 / Rim-off / none), Mark
+replied in session, verbatim:
+
+> *"1 (pool_soft is approved)"*
+>
+> *"Push"*
+
+**Standing record.** `lighting.rim_profile: pool_soft` is the owner-accepted
+rig look of record for the studio rig, effective 2026-09-24. The job of
+record is `jobs/rl300_05_studio-floor.json` (the job the 3h orbit measured);
+it now carries `"rim_profile": "pool_soft"` in its lighting block.
+`jobs/rl300_04_studio-white.json` deliberately keeps the value **absent** —
+absent selects `pool_v1`, the exact rig its accepted stills parity was
+measured with; extending the acceptance to that job would be its own round.
+
+Basis, from the 3h measured record (`output/batch3h-rim-fix-results.md`, run
+section in `docs/cloud-smoke.md`): SOFT reported no gate problems at all 30
+orbit azimuths against the unchanged 1.8 pre-lens threshold while preserving
+`excursion` (the total tonal span) — the pool-edge transition is spread, not
+removed. The acceptance is a renderer/look change: ruling 2's
+new-source-`.blend` rule does not apply to `rim_profile` (3g ruling), and
+the "looks good is not acceptance" rule is satisfied by the explicit words
+above. No threshold moved; the shipped rig (`pool_v1`) remains reproducible
+by omitting the key.
+
+The same message authorized **pushing the branch** (15 commits were waiting);
+the push to `origin/codex/studiomark-scene-prep` executed the same day.
