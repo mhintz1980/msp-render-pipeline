@@ -1232,3 +1232,28 @@ replied in session, verbatim:
    measured seconds after — the standing convention applies when it runs.
 5. **Full-orbit claim — OPEN until a 360-frame run exists.** No orbit-wide
    statement is claimable from the 30-azimuth grid.
+
+## 2026-09-24 — owner acceptance: the first 360-frame turntable orbit
+
+After reviewing the batch 3m report (360/360 frames at 1°, job of record
+`jobs/rl300_05_studio-floor.json` with the accepted `pool_soft` rig, every
+sequence gate passing — worst pre-lens background step 0.9043 at az361
+against the unchanged 1.8 gate, MP4 and WebM each 360 encoded frames with
+decode-back PSNR ≥ 37.69 dB against the 35 dB floor; run record in
+`docs/cloud-smoke.md`, "T-V2 first full orbit"), Mark answered verbatim:
+
+> *"i approve. commit any changes and push"*
+
+Consequences:
+
+- The loop `output/tv2-orbit360-20260924/turntable-loop.mp4` (and its
+  `.webm` sibling), worker build `22441c8cb658...`, app
+  `ap-d0yPBQPKaOrJo7Y1P07xxW`, moves from `awaiting_owner_review` to
+  **owner-accepted**. `output/` is gitignored evidence; this record and the
+  run record are the durable facts, not the files.
+- Carried item 5 of the 2026-09-24 rulings ("full-orbit claim open until a
+  360-frame run exists") is **closed**: the 360-frame run exists, passes the
+  gates, and is accepted by the owner.
+- Nothing else is widened: the acceptance is of this orbit at this camera,
+  this rig and this environment. A different job, camera path or rig is a
+  new round.

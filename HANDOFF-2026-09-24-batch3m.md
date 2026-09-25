@@ -4,7 +4,7 @@ Worktree `C:/Projects/msp-render-pipeline-scene-prep`, branch
 `codex/studiomark-scene-prep`. Supersedes `HANDOFF-2026-09-24-batch3l.md`.
 Session commits: `1fab813` (edge probe record), `6cd3429` (T-V2a resume),
 `f6da1eb` (T-V2b streaming + WebM), this handoff (360 orbit record).
-**Not pushed** — the 3j/3k push authorization was per-occasion; ask Mark.
+Pushed under Mark's 2026-09-24 "commit any changes and push".
 
 Suite, architect-run on the project venv: **`Ran 321 tests … OK`, exit 0 via
 `${PIPESTATUS[0]}`** (288 → 315 → 321). No threshold moved. No local renders.
@@ -35,15 +35,15 @@ Suite, architect-run on the project venv: **`Ran 321 tests … OK`, exit 0 via
 ## 2. Owner items (Mark)
 
 - **Watch the loop**: `output/tv2-orbit360-20260924/turntable-loop.mp4`
-  (and `.webm`), 12 s at 30 fps. Status `awaiting_owner_review` — ruling 5's
+  (and `.webm`), 12 s at 30 fps. **ACCEPTED by Mark 2026-09-24 ("i approve"), recorded in `docs/rl300-parity.md`; ruling 5 closed.** Was: status `awaiting_owner_review` — ruling 5's
   precondition (a 360-frame run) now exists, but the full-orbit/video
   acceptance is his words, not the gates.
-- **Push** the four commits? (not done without his say-so.)
+- **Push**: authorized and executed with the acceptance commit.
 
 ## 3. Next actions
 
-1. On Mark's review: accept → record verbatim in `docs/rl300-parity.md`;
-   reject → capture the defect he names and gate it before re-dispatch.
+1. DONE: Mark accepted the loop (recorded verbatim in `docs/rl300-parity.md`).
+   Next video work starts from the §9 leftovers below.
 2. Remaining §9 items not yet built: an optional manifest `sequence` block
    (the orbit is CLI-driven today) and a declared sampled-frame set for the
    §9 criterion-4 threshold checks. The dispatcher's `cost_estimate_usd`
