@@ -628,7 +628,46 @@ not Git Bash.
 **What T-V2 explicitly does not do:** no cloud, no 300-frame shot, no
 environment walkthrough, no change to the `output` manifest block, and no change
 to any accepted hash. (§6.3 was carved out as its own task and has since landed;
-it is no longer a T-V2 concern.)
+it is no longer a T-V2 concern.) The "no cloud / no 300-frame shot" half of that
+sentence was superseded on 2026-09-20 (decision record §12: option A **on
+Modal**) and again by the accepted 360-frame orbit below.
+
+### 9.1 Status, 2026-09-24 (batch 3m) — what is built and what is left
+
+- **Built.** One Blender process per frame with digest-verified resumability
+  (item 2) — `scripts/cloud_job_render.py --resume`, shipped in `6cd3429`;
+  per-frame composites through the unchanged T05 gates (item 3); H.264 MP4
+  **and** VP9 WebM encodes with frame-count and decode-back PSNR gates
+  (item 4) — `f6da1eb`, `--no-webm` opts out of the second encode. Orbit-wide
+  run: `docs/cloud-smoke.md`, "T-V2 first full orbit" — 360/360 frames,
+  criterion 2 (contiguous, no duplicate consecutive digests), 3 (product
+  integrity), 6 (decode-back) and 8 (suite 321 OK) all hold on it, and
+  criterion 9's `awaiting_owner_review` was met and then **accepted by Mark the
+  same date** (`docs/rl300-parity.md`). Criterion 7 (resume, proven
+  adversarially) holds as a unit proof — a simulated crash at frame 3 that
+  leaves only frames 1–2 complete, then a resume that dispatches exactly the
+  rest and lands byte-identical to an uninterrupted run — and `--resume` has
+  since been used in production only on a fresh directory, where nothing was
+  skipped or re-paid; a full orbit has not yet been killed and resumed in the
+  cloud.
+- **Not built.** Item 6, the optional manifest `sequence` block: an orbit is
+  still declared on the command line (`--orbit N` / `--azimuths`), not in the
+  job manifest. Criterion 4's declared sampled-frame set is likewise not in the
+  manifest — the per-frame integrity gate runs on every frame, so the sampled
+  set only matters for the stills-style threshold comparisons.
+- **Deviation, stated plainly.** Criterion 1's 60-frame dark-sector probe was
+  **not** run as a separate pre-loop step. The pre-flight that ran at the head
+  of T-V2 was the owner-approved elevational-edge probe (§13.5, ruling 4 of
+  2026-09-24), which is a different sector. The orbit then covered every
+  azimuth, including the low-luminance ones, and its own sequence statistics
+  answer criterion 1's actual question — zero neighbour outlier frames and a
+  worst mean-luma second difference of 1.03/255, i.e. a smooth ~1.9× gradient
+  (min 63.38 at az182), not pumping. A standalone dark-sector probe remains
+  available if the owner wants criterion 1 satisfied in its original shape.
+- **Estimate, not a gate.** The dispatcher's `cost_estimate_usd` is ~14×
+  conservative (22.7534 recorded for a run that measured USD 1.65429
+  rate-derived). Re-basing it on measured warm ~13.6 s/frame plus one
+  position-1 frame is a test update, not a threshold change.
 
 ---
 
